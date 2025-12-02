@@ -77,7 +77,7 @@ cat > "$APP_DATA_DIR/manifest.json" <<- EOM
 {
   "name": "Caelestia Einstellungen",
   "beschreibung": "Eine Einstellungs-App für Caelestia Hyprland-Setups.",
-  "author": "Jörn",
+  "author": "255Jojo255",
   "version": "1.0.1"
 }
 EOM

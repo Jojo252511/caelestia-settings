@@ -3,8 +3,7 @@
 set -e
 
 # --- KONFIGURATION ---
-# HIER DEINE GIT-URL EINTRAGEN! (z.B. https://github.com/DeinName/caelestia-settings.git)
-GIT_REPO_URL="https://github.com/DEIN_USERNAME/DEIN_REPO_NAME.git"
+GIT_REPO_URL="https://github.com/Jojo252511/caelestia-settings.git"
 TEMP_DIR="/tmp/caelestia-settings-update"
 
 echo "#######################################"
