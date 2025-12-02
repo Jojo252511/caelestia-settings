@@ -15,6 +15,7 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 MAIN_APP_SRC="$SCRIPT_DIR/main.py"
 SRC_FOLDER="$SCRIPT_DIR/src"
 UPDATE_SCRIPT_SRC="$SCRIPT_DIR/app_update.sh"
+MANIFEST_SRC="$SCRIPT_DIR/manifest.json"
 
 if [ ! -f "$MAIN_APP_SRC" ] || [ ! -d "$SRC_FOLDER" ]; then
     echo "FEHLER: 'main.py' oder 'src/' Ordner nicht gefunden!"
