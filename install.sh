@@ -72,15 +72,14 @@ else
     echo "WARNUNG: 'app_update.sh' nicht gefunden. Update-Funktion wird nicht verfügbar sein."
 fi
 
-echo "   ...Erstelle Metadaten-Datei (manifest.json)"
-cat > "$APP_DATA_DIR/manifest.json" <<- EOM
-{
-  "name": "Caelestia Einstellungen",
-  "beschreibung": "Eine Einstellungs-App für Caelestia Hyprland-Setups.",
-  "author": "255Jojo255",
-  "version": "1.0.1"
-}
-EOM
+if [ -f "$MANIFEST_SRC" ]; then
+    echo "   ...Kopiere 'manifest.json' nach $APP_DATA_DIR"
+    cp "$MANIFEST_SRC" "$APP_DATA_DIR/"
+else
+    echo "WARNUNG: 'manifest.json' nicht im Quellordner gefunden!"
+    echo "Erstelle Dummy-Manifest, damit die App starten kann."
+    echo '{"version": "unknown"}' > "$APP_DATA_DIR/manifest.json"
+fi
 
 echo "   ...Erstelle Befehl-Alias (Symlink) in $APP_TARGET_BIN"
 ln -sf "$APP_TARGET_MAIN" "$APP_TARGET_BIN"
@@ -118,7 +117,7 @@ echo
 echo ">>> SCHRITT 5: Erstelle Eintrag im App-Menü..."
 cat > "$APP_TARGET_DESKTOP" <<- EOM
 [Desktop Entry]
-Version=1.0
+Version=1.0.2
 Name=Caelestia Einstellungen
 Comment=Hyprland-, Monitor- und Audio-Einstellungen verwalten
 Exec=caelestia-settings
