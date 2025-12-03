@@ -1,7 +1,9 @@
 import json
+import os 
 import subprocess
 from gi.repository import Gtk, Adw
 from src.config import APP_DATA_DIR
+from src.lang import t
 
 class AboutPage(Gtk.Box):
     def __init__(self, main_window, **kwargs):
@@ -16,31 +18,30 @@ class AboutPage(Gtk.Box):
         manifest_path = APP_DATA_DIR / "manifest.json"
         self.update_script = APP_DATA_DIR / "app_update.sh"
         
-        info = {"name": "Caelestia", "version": "?", "author": "?", "beschreibung": "Manifest fehlt"}
+        info = {"name": "Caelestia", "version": "?", "author": "?", "beschreibung": t("Manifest missing")}
 
         try:
             if manifest_path.exists():
                 with open(manifest_path, 'r') as f:
                     data = json.load(f)
                     info.update(data)
-        except Exception as e: print(f"Fehler Manifest: {e}")
+        except Exception as e: print(f"Err: {e}")
 
-        # --- Gruppe 1: Informationen ---
+        # Info Group
         info_group = Adw.PreferencesGroup()
         self.append(info_group)
         
-        info_group.add(Adw.ActionRow(title="Version", subtitle=info["version"]))
-        info_group.add(Adw.ActionRow(title="Autor", subtitle=info["author"]))
-        info_group.add(Adw.ActionRow(title="Beschreibung", subtitle=info["beschreibung"]))
+        info_group.add(Adw.ActionRow(title=t("Version"), subtitle=info["version"]))
+        info_group.add(Adw.ActionRow(title=t("Author"), subtitle=info["author"]))
+        info_group.add(Adw.ActionRow(title=t("Description"), subtitle=info["beschreibung"]))
 
-        # --- Gruppe 2: App-Verwaltung ---
-        update_group = Adw.PreferencesGroup(title="App-Verwaltung")
+        # App Mgmt Group
+        update_group = Adw.PreferencesGroup(title=t("App Management"))
         self.append(update_group)
 
-        update_row = Adw.ActionRow(title="App aktualisieren", subtitle="Lädt die neueste Version von Git und installiert sie neu")
-        
-        update_btn = Gtk.Button(label="Update prüfen")
-        update_btn.add_css_class("suggested-action") # Macht den Knopf blau
+        update_row = Adw.ActionRow(title=t("Update App"), subtitle=t("Downloads latest version..."))
+        update_btn = Gtk.Button(label=t("Check for Updates"))
+        update_btn.add_css_class("suggested-action")
         update_btn.connect("clicked", self.on_update_clicked)
         
         update_row.add_suffix(update_btn)
@@ -48,12 +49,15 @@ class AboutPage(Gtk.Box):
 
     def on_update_clicked(self, button):
         if not self.update_script.exists():
-            print(f"FEHLER: Update-Skript nicht gefunden unter: {self.update_script}")
+            print(f"ERR: Script missing: {self.update_script}")
             return
-
-        print("Starte Update-Prozess...")
-        try:
-            # Startet das Skript in einem neuen Terminal (Kitty)
-            subprocess.Popen(["kitty", str(self.update_script)])
-        except Exception as e:
-            print(f"Fehler beim Starten des Updates: {e}")
+        
+        # Holen der eigenen Prozess-ID (PID)
+        my_pid = str(os.getpid())
+        print(f"Starte Update-Prozess (übergebe PID: {my_pid})...")
+        
+        try: 
+            # Wir übergeben die PID als Argument an das Skript
+            # Kitty Syntax: kitty [options] program [arguments...]
+            subprocess.Popen(["kitty", str(self.update_script), my_pid])
+        except Exception as e: print(f"Err: {e}")

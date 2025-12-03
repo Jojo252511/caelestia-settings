@@ -18,7 +18,7 @@ class GeneralPage(Gtk.Box):
 
         self.is_loading = False
 
-        # --- EINGABE ---
+        # --- EINGABE (Input) ---
         input_group = Adw.PreferencesGroup(title=t("Input"))
         self.append(input_group)
 
@@ -45,7 +45,7 @@ class GeneralPage(Gtk.Box):
         if current_layout == "de": self.btn_de.set_active(True)
         else: self.btn_us.set_active(True)
 
-        # --- REGION ---
+        # --- REGION & SPRACHE ---
         system_group = Adw.PreferencesGroup(title=t("Region & Language"))
         self.append(system_group)
 
@@ -75,6 +75,11 @@ class GeneralPage(Gtk.Box):
         self.lang_combo.connect("changed", self.on_language_changed)
         self.time_combo.connect("changed", self.on_timezone_changed)
 
+    def show_toast(self, message):
+        """Hilfsfunktion, um Toasts im Hauptfenster anzuzeigen"""
+        toast = Adw.Toast.new(message)
+        self.main_window.add_toast(toast)
+
     def get_current_layout(self):
         try:
             with open(self.config_file, 'r') as f:
@@ -86,13 +91,17 @@ class GeneralPage(Gtk.Box):
 
     def on_layout_toggled(self, button, lang):
         if not button.get_active(): return
+        print(f"Setze Layout: {lang}")
         try:
             subprocess.run(["hyprctl", "keyword", "input:kb_layout", lang], check=True)
             if self.config_file.exists():
                 with open(self.config_file, 'r') as f: content = f.read()
                 new_content = re.sub(r"(^\s*kb_layout\s*=\s*).*", r"\g<1>" + lang, content, flags=re.MULTILINE)
                 with open(self.config_file, 'w') as f: f.write(new_content)
-        except Exception as e: print(f"Err: {e}")
+            self.show_toast(f"Tastatur auf {lang.upper()} gesetzt.")
+        except Exception as e: 
+            print(f"Fehler Tastatur: {e}")
+            self.show_toast(f"Fehler: {e}")
 
     def load_system_settings(self):
         self.is_loading = True
@@ -120,20 +129,30 @@ class GeneralPage(Gtk.Box):
         if self.is_loading: return
         lang = combo.get_active_id()
         if not lang: return
+        
         try:
+            # pkexec benötigt einen Polkit Agenten im Hintergrund!
             subprocess.run(['pkexec', 'localectl', 'set-locale', f'LANG={lang}'], check=True)
-            print(t("Language set successfully (reboot needed)."))
+            self.show_toast(t("Language set successfully (reboot needed)."))
         except subprocess.CalledProcessError:
-            print(t("Language change cancelled."))
+            self.show_toast(t("Language change cancelled."))
+            # Reset UI auf alten Wert
+            self.load_system_settings()
+        except Exception as e:
+            self.show_toast(f"Fehler: {e}")
             self.load_system_settings()
 
     def on_timezone_changed(self, combo):
         if self.is_loading: return
         tz = combo.get_active_id()
         if not tz: return
+
         try:
             subprocess.run(['pkexec', 'timedatectl', 'set-timezone', tz], check=True)
-            print(t("Timezone set successfully."))
+            self.show_toast(t("Timezone set successfully."))
         except subprocess.CalledProcessError:
-            print(t("Timezone change cancelled."))
+            self.show_toast(t("Timezone change cancelled."))
+            self.load_system_settings()
+        except Exception as e:
+            self.show_toast(f"Fehler: {e}")
             self.load_system_settings()
