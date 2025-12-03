@@ -149,6 +149,7 @@ if ! grep -q -F "$RULE_TAG" "$HYPR_CONFIG_FILE"; then
 $RULE_TAG
 windowrule = float, class:(org.caelestia.settings)
 windowrule = center, class:(org.caelestia.settings)
+bind = SUPER, I, exec, caelestia-settings
 EOM
 fi
 
@@ -172,5 +173,17 @@ echo "###      INSTALLATION FERTIG      ###"
 echo "#######################################"
 echo
 echo "Die Caelestia Settings App ist jetzt installiert!"
-echo "Bitte logge dich neu ein."
+echo
+echo "!!! WICHTIG: Bitte logge dich jetzt aus und wieder ein (oder starte den PC neu). !!!"
+echo
+echo "Nach dem Neustart kannst du die App:"
+echo "1. Im App-Menü (als 'Caelestia Einstellungen') finden."
+echo "2. Im Terminal mit dem Befehl 'caelestia-settings' starten."
+echo "3. Mit 'Super + I'"
+echo
+echo "--- Optional: Tastenkürzel (Super+I) entfernen---"
+echo "Um die App nicht mit Super+I zu starten, entferne bitte manuell"
+echo "folgende Zeile in deiner '~/.config/hypr/hyprland.conf' entfernen:"
+echo
+echo "bind = SUPER, I, exec, caelestia-settings"
 echo
