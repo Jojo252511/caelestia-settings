@@ -118,7 +118,7 @@ echo
 echo ">>> SCHRITT 5: Erstelle Eintrag im App-Menü..."
 cat > "$APP_TARGET_DESKTOP" <<- EOM
 [Desktop Entry]
-Version=1.0.2
+Version=0.0.2
 Name=Caelestia Einstellungen
 Comment=Hyprland-, Monitor- und Audio-Einstellungen verwalten
 Exec=caelestia-settings
