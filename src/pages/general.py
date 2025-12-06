@@ -46,7 +46,7 @@ class GeneralPage(Gtk.Box):
         else: self.btn_us.set_active(True)
 
         # --- REGION & SPRACHE ---
-        system_group = Adw.PreferencesGroup(title=t("Region & Language"))
+        system_group = Adw.PreferencesGroup(title=t("Region and Language"))
         self.append(system_group)
 
         # Sprache

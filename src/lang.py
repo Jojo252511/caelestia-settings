@@ -23,7 +23,7 @@ TRANSLATIONS = {
     "Input": "Eingabe",
     "Keyboard Layout": "Tastaturbelegung",
     "Live change in Hyprland": "Live-Änderung in Hyprland",
-    "Region & Language": "Region & Sprache",
+    "Region and Language": "Region und Sprache",
     "System Language": "Systemsprache",
     "Requires password": "Erfordert Passwort",
     "Timezone": "Zeitzone",
@@ -34,7 +34,7 @@ TRANSLATIONS = {
     "Timezone change cancelled.": "Zeitzonenänderung abgebrochen.",
 
     # Monitor Page
-    "Resolution & Refresh Rate": "Auflösung & Frequenz",
+    "Resolution and Refresh Rate": "Auflösung und Frequenz",
     "Arrangement": "Anordnung",
     "Automatic": "Automatisch",
     "Right of": "Rechts von",
@@ -51,6 +51,19 @@ TRANSLATIONS = {
     "Output Device": "Ausgabegerät",
     "Default Volume": "Standard-Lautstärke",
     "Error loading": "Fehler beim Laden",
+
+    # WLAN Page (NEU)
+    "Wi-Fi Networks": "WLAN-Netzwerke",
+    "Scan": "Suchen",
+    "No Wi-Fi adapter found.": "Kein WLAN-Adapter gefunden.",
+    "Connected": "Verbunden",
+    "Connect": "Verbinden",
+    "Disconnect": "Trennen",
+    "Password Required": "Passwort erforderlich",
+    "Please enter the password for": "Bitte gib das Passwort ein für",
+    "Connection failed": "Verbindung fehlgeschlagen",
+    "Connection successful": "Verbindung erfolgreich",
+    "Scanning...": "Suche...",
 
     # Update Page
     "System Update": "System-Aktualisierung",
