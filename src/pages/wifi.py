@@ -144,18 +144,16 @@ class WifiPage(Gtk.Box):
         dialog.add_response("cancel", t("Cancel"))
         dialog.add_response("connect", t("Connect"))
         
-        # Dialog ans Hauptfenster binden (Fix für GTK4 Crash)
+        # Dialog ans Hauptfenster binden
         dialog.set_transient_for(self.main_window)
         
         pwd_entry = Gtk.PasswordEntry()
         pwd_entry.set_hexpand(True)
         
-        # --- FIX FÜR DEN ABSTURZ ---
-        # Statt set_activates_default nutzen wir das Signal manuell
+        # --- FIX: Manuelles Enter-Handling ---
         def on_entry_activate(entry):
             dialog.response("connect")
         pwd_entry.connect("activate", on_entry_activate)
-        # --- ENDE FIX ---
         
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_margin_top(12)
@@ -173,7 +171,7 @@ class WifiPage(Gtk.Box):
                 self.connect_to(ssid, password)
             
         dialog.connect("response", response_cb)
-        dialog.present() # In GTK4 hat present() keine Argumente!
+        dialog.present() 
 
     def connect_to(self, ssid, password):
         self.show_toast(f"{t('Scanning...')} {ssid}...")
@@ -184,8 +182,10 @@ class WifiPage(Gtk.Box):
                 cmd.extend(['password', password])
             
             res = subprocess.run(cmd, capture_output=True, text=True)
+            
             success = res.returncode == 0
-            GLib.idle_add(self.on_connect_finished, success, res.stderr)
+            # --- FIX: Lambda für Parameter-Übergabe ---
+            GLib.idle_add(lambda: self.on_connect_finished(success, res.stderr))
 
         threading.Thread(target=_thread, daemon=True).start()
 
@@ -195,7 +195,10 @@ class WifiPage(Gtk.Box):
             self.scan_networks()
         else:
             self.show_toast(f"{t('Connection failed')}: {error_msg.strip()}")
+        # Wichtig: GLib Callback muss False zurückgeben, um zu stoppen
+        return False 
 
     def show_toast(self, message):
         toast = Adw.Toast.new(message)
+        # Jetzt rufen wir die neue Methode in MainWindow auf
         self.main_window.add_toast(toast)

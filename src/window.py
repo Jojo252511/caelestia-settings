@@ -5,7 +5,7 @@ from src.config import save_monitor_config, HYPR_MONITORS_CONF, APP_DATA_DIR
 from src.pages.general import GeneralPage
 from src.pages.monitor import MonitorPage
 from src.pages.audio import AudioPage
-from src.pages.wifi import WifiPage 
+from src.pages.wifi import WifiPage
 from src.pages.updates import UpdatePage
 from src.pages.about import AboutPage
 from src.lang import t
@@ -16,8 +16,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_title(t("Caelestia Settings"))
         self.set_default_size(800, 600)
 
+        # --- FIX: ToastOverlay als Haupt-Container ---
+        self.toast_overlay = Adw.ToastOverlay()
+        self.set_content(self.toast_overlay)
+
+        # Der Rest kommt IN das Overlay
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.set_content(root)
+        self.toast_overlay.set_child(root)
         
         header = Adw.HeaderBar()
         root.append(header)
@@ -52,15 +57,18 @@ class MainWindow(Adw.ApplicationWindow):
         self.mon_page = MonitorPage(self)
         self.about_page = AboutPage(self)
 
-        # --- SEITEN (Reihenfolge bestimmt Anzeige) ---
         self.stack.add_titled(GeneralPage(self), "gen", t("General"))
         self.stack.add_titled(self.mon_page, "mon", t("Monitor"))
-        self.stack.add_titled(WifiPage(self), "wifi", t("WLAN"))  # <--- NEU
+        self.stack.add_titled(WifiPage(self), "wifi", t("WLAN"))
         self.stack.add_titled(AudioPage(self), "audio", t("Audio"))
         self.stack.add_titled(UpdatePage(self), "upd", t("Updates"))
         self.stack.add_titled(self.about_page, "about", t("About"))
 
         self.stack.connect("notify::visible-child", self.on_page_change)
+
+    # --- FIX: Neue Methode für Toasts ---
+    def add_toast(self, toast):
+        self.toast_overlay.add_toast(toast)
 
     def on_page_change(self, stack, _):
         child = stack.get_visible_child()
