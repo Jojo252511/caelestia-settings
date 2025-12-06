@@ -46,7 +46,7 @@ class GeneralPage(Gtk.Box):
         else: self.btn_us.set_active(True)
 
         # --- REGION & SPRACHE ---
-        system_group = Adw.PreferencesGroup(title=t("Region & Language"))
+        system_group = Adw.PreferencesGroup(title=t("Region and Language"))
         self.append(system_group)
 
         # Sprache
@@ -78,7 +78,12 @@ class GeneralPage(Gtk.Box):
     def show_toast(self, message):
         """Hilfsfunktion, um Toasts im Hauptfenster anzuzeigen"""
         toast = Adw.Toast.new(message)
-        self.main_window.add_toast(toast)
+        # FIX: Verwende die neue Helfer-Methode im Window
+        if hasattr(self.main_window, 'add_toast'):
+            self.main_window.add_toast(toast)
+        else:
+            # Fallback, falls window.py noch nicht aktualisiert ist
+            print(f"Toast (Fallback): {message}")
 
     def get_current_layout(self):
         try:

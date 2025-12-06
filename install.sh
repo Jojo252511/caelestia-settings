@@ -150,6 +150,7 @@ $RULE_TAG
 windowrule = float, class:(org.caelestia.settings)
 windowrule = center, class:(org.caelestia.settings)
 bind = SUPER, I, exec, caelestia-settings
+exec-once = /usr/lib/polkit-kde-authentication-agent-1
 EOM
 fi
 

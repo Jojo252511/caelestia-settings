@@ -24,6 +24,7 @@ class MonitorPage(Gtk.ScrolledWindow):
             self.saved_config = load_monitor_config()
             res = subprocess.run(['hyprctl', 'monitors', 'all', '-j'], capture_output=True, text=True, check=True, timeout=2)
             live_monitors = json.loads(res.stdout)
+            # Nur aktive Monitore
             active_mons = [m for m in live_monitors if not m.get('disabled', False)]
             all_names = [m['name'] for m in active_mons]
             
@@ -56,8 +57,8 @@ class MonitorWidget(Adw.PreferencesGroup):
         self.name = monitor_data['name']
         self.set_title(f"{t('Monitor')}: {self.name} ({monitor_data['description']})")
         
-        # 1. Resolution
-        res_row = Adw.ActionRow(title=t("Resolution & Refresh Rate"))
+        # 1. Auflösung (Immer sichtbar)
+        res_row = Adw.ActionRow(title=t("Resolution and Refresh Rate"))
         self.res_combo = Gtk.ComboBoxText()
         
         modes = monitor_data.get('availableModes', [])
@@ -75,13 +76,14 @@ class MonitorWidget(Adw.PreferencesGroup):
         res_row.add_suffix(self.res_combo)
         self.add(res_row)
 
-        # 2. Arrangement
+        # 2. Anordnung & 3. Ziel (Nur bei > 1 Monitor)
         arrange_row = Adw.ActionRow(title=t("Arrangement"))
         arrange_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         arrange_row.add_suffix(arrange_box)
         self.add(arrange_row)
 
         self.arrange_combo = Gtk.ComboBoxText()
+        # Option für aktuellen Status hinzufügen
         self.cur_pos_id = "current_pos"
         self.cur_pos_str = f"{t('Custom')} ({monitor_data['x']}x{monitor_data['y']})"
         self.arrange_combo.append(self.cur_pos_id, self.cur_pos_str)
@@ -90,27 +92,37 @@ class MonitorWidget(Adw.PreferencesGroup):
                 ("darueber", t("Above")), ("darunter", t("Below")), ("spiegeln", t("Mirror")), ("deaktivieren", t("Disable"))]
         for k, v in opts: self.arrange_combo.append(k, v)
         
-        saved_arrange = saved_settings.get("arrange")
-        if saved_arrange: self.arrange_combo.set_active_id(saved_arrange)
-        else: self.arrange_combo.set_active_id(self.cur_pos_id)
-        
         arrange_box.append(self.arrange_combo)
 
-        # 3. Target
+        # Ziel-Monitor Dropdown
         self.target_combo = Gtk.ComboBoxText()
         others = [n for n in all_names if n != self.name]
-        if not others:
-            self.target_combo.append("...", "...")
-            self.target_combo.set_sensitive(False)
-        else:
+        
+        if others:
             for n in others: self.target_combo.append(n, n)
+        else:
+            self.target_combo.append("...", "...") # Fallback, sollte unsichtbar sein
+        
+        arrange_box.append(self.target_combo)
+
+        # --- LOGIK: Sichtbarkeit steuern ---
+        if len(all_names) < 2:
+            # Nur 1 Monitor: Verstecke die Anordnungs-Zeile
+            arrange_row.set_visible(False)
+            # Setze sicherheitshalber auf "current_pos", damit sich nichts verschiebt
+            self.arrange_combo.set_active_id(self.cur_pos_id)
+        else:
+            # Mehrere Monitore: Zeige alles und lade Einstellungen
+            saved_arrange = saved_settings.get("arrange")
+            if saved_arrange: self.arrange_combo.set_active_id(saved_arrange)
+            else: self.arrange_combo.set_active_id(self.cur_pos_id)
+            
             saved_target = saved_settings.get("target")
             if not saved_target or not self.target_combo.set_active_id(saved_target):
                 self.target_combo.set_active(0)
-        
-        arrange_box.append(self.target_combo)
-        self.arrange_combo.connect("changed", self.on_arrange_changed)
-        self.on_arrange_changed(self.arrange_combo)
+
+            self.arrange_combo.connect("changed", self.on_arrange_changed)
+            self.on_arrange_changed(self.arrange_combo)
 
     def on_arrange_changed(self, combo):
         active = combo.get_active_id()
