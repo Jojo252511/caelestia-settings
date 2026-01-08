@@ -1,7 +1,6 @@
 #!/bin/bash
 #
 # Installer für die modulare Caelestia Settings App
-# Version 5 (mit app_update.sh Support)
 #
 set -e
 
@@ -64,7 +63,7 @@ chmod +x "$APP_TARGET_MAIN"
 echo "   ...Kopiere 'src/' Ordner nach $APP_DATA_DIR"
 cp -r "$SRC_FOLDER" "$APP_DATA_DIR/"
 
-# NEU: Update-Skript kopieren
+# Update-Skript kopieren
 if [ -f "$UPDATE_SCRIPT_SRC" ]; then
     echo "   ...Kopiere 'app_update.sh' nach $APP_DATA_DIR"
     cp "$UPDATE_SCRIPT_SRC" "$APP_DATA_DIR/"
@@ -73,6 +72,7 @@ else
     echo "WARNUNG: 'app_update.sh' nicht gefunden. Update-Funktion wird nicht verfügbar sein."
 fi
 
+# Manifest kopieren
 if [ -f "$MANIFEST_SRC" ]; then
     echo "   ...Kopiere 'manifest.json' nach $APP_DATA_DIR"
     cp "$MANIFEST_SRC" "$APP_DATA_DIR/"
@@ -118,7 +118,7 @@ echo
 echo ">>> SCHRITT 5: Erstelle Eintrag im App-Menü..."
 cat > "$APP_TARGET_DESKTOP" <<- EOM
 [Desktop Entry]
-Version=0.0.2
+Version=0.0.4
 Name=Caelestia Einstellungen
 Comment=Hyprland-, Monitor- und Audio-Einstellungen verwalten
 Exec=caelestia-settings
@@ -136,22 +136,43 @@ echo ">>> SCHRITT 6: Konfiguriere Hyprland..."
 HYPR_CONFIG_DIR="$HOME/.config/hypr"
 HYPR_CONFIG_FILE="$HYPR_CONFIG_DIR/hyprland.conf"
 HYPR_INCLUDES_DIR="$HYPR_CONFIG_DIR/hyprland"
+RULES_CONFIG_FILE="$HYPR_INCLUDES_DIR/rules.conf"
 
 mkdir -p "$HYPR_CONFIG_DIR"
 mkdir -p "$HYPR_INCLUDES_DIR"
 touch "$HYPR_CONFIG_FILE"
+touch "$RULES_CONFIG_FILE"
 
-RULE_TAG="# Caelestia Settings Rule"
-if ! grep -q -F "$RULE_TAG" "$HYPR_CONFIG_FILE"; then
-    echo "   ...Füge 'floating' Fenster-Regel hinzu."
-    cat >> "$HYPR_CONFIG_FILE" <<- EOM
+RULES_SOURCE="source = $RULES_CONFIG_FILE"
+if ! grep -q -F "$RULES_SOURCE" "$HYPR_CONFIG_FILE"; then
+    echo "   ...Füge 'source' Regel für rules.conf zur hyprland.conf hinzu."
+    echo "$RULES_SOURCE" >> "$HYPR_CONFIG_FILE"
+fi
 
-$RULE_TAG
-windowrule = float, class:(org.caelestia.settings)
-windowrule = center, class:(org.caelestia.settings)
-bind = SUPER, I, exec, caelestia-settings
-exec-once = /usr/lib/polkit-kde-authentication-agent-1
+NEW_RULES_TAG="# Caelestia Settings Rules"
+if ! grep -q -F "$NEW_RULES_TAG" "$RULES_CONFIG_FILE"; then
+    echo "   ...Schreibe Window-Rules in $RULES_CONFIG_FILE."
+    cat >> "$RULES_CONFIG_FILE" <<- EOM
+
+$NEW_RULES_TAG
+windowrule = float true, match:class org\.caelestia\.settings
+windowrule = center 1, match:class org\.caelestia\.settings
 EOM
+else
+    echo "   ...Window-Rules existieren bereits in rules.conf."
+fi
+
+# Diese gehören in die keybinds.conf!!!
+BIND_CMD="bind = SUPER, I, exec, caelestia-settings"
+if ! grep -q -F "bind = SUPER, I, exec, caelestia-settings" "$HYPR_CONFIG_FILE"; then
+    echo "   ...Füge Tastenkürzel (Super+I) zur hyprland.conf hinzu."
+    echo "$BIND_CMD" >> "$HYPR_CONFIG_FILE"
+fi
+
+AUTH_CMD="exec-once = /usr/lib/polkit-kde-authentication-agent-1"
+if ! grep -q -F "/usr/lib/polkit-kde-authentication-agent-1" "$HYPR_CONFIG_FILE"; then
+    echo "   ...Füge Polkit-Agent zur hyprland.conf hinzu."
+    echo "$AUTH_CMD" >> "$HYPR_CONFIG_FILE"
 fi
 
 MONITOR_CONFIG_FILE_PATH="$HYPR_INCLUDES_DIR/monitors.conf"
@@ -174,17 +195,12 @@ echo "###      INSTALLATION FERTIG      ###"
 echo "#######################################"
 echo
 echo "Die Caelestia Settings App ist jetzt installiert!"
+echo "Bitte logge dich neu ein oder lade Hyprland neu."
 echo
-echo "!!! WICHTIG: Bitte logge dich jetzt aus und wieder ein (oder starte den PC neu). !!!"
-echo
-echo "Nach dem Neustart kannst du die App:"
-echo "1. Im App-Menü (als 'Caelestia Einstellungen') finden."
-echo "2. Im Terminal mit dem Befehl 'caelestia-settings' starten."
-echo "3. Mit 'Super + I'"
-echo
-echo "--- Optional: Tastenkürzel (Super+I) entfernen---"
-echo "Um die App nicht mit Super+I zu starten, entferne bitte manuell"
-echo "folgende Zeile in deiner '~/.config/hypr/hyprland.conf' entfernen:"
-echo
-echo "bind = SUPER, I, exec, caelestia-settings"
-echo
+
+
+#Bei älteren Instalationen muss das in der hyperland.conf entfernt werden
+
+## Caelestia Settings Rules
+#windowrule = float, class:(org.caelestia.settings)
+#windowrule = center, class:(org.caelestia.settings)
