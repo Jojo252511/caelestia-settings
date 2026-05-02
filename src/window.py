@@ -1,39 +1,33 @@
 import subprocess
-import json
 from gi.repository import Gtk, Adw, GLib
-from src.config import save_monitor_config, HYPR_MONITORS_CONF, APP_DATA_DIR
+from src.config import APP_DATA_DIR
 from src.pages.general import GeneralPage
 from src.pages.monitor import MonitorPage
 from src.pages.audio import AudioPage
 from src.pages.wifi import WifiPage
 from src.pages.updates import UpdatePage
 from src.pages.about import AboutPage
+from src.pages.window_rules import WindowRulesPage
+from src.pages.keybinds import KeybindsPage
 from src.lang import t
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(**kwargs)
         self.set_title(t("Caelestia Settings"))
-        self.set_default_size(800, 600)
+        self.set_default_size(860, 640)
 
-        # --- FIX: ToastOverlay als Haupt-Container ---
+        # --- ToastOverlay als Haupt-Container ---
         self.toast_overlay = Adw.ToastOverlay()
         self.set_content(self.toast_overlay)
 
-        # Der Rest kommt IN das Overlay
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.toast_overlay.set_child(root)
-        
+
         header = Adw.HeaderBar()
         root.append(header)
-        
-        # --- BUTTONS ---
-        self.apply_btn = Gtk.Button(label=t("Apply"))
-        self.apply_btn.add_css_class("suggested-action")
-        self.apply_btn.set_visible(False)
-        self.apply_btn.connect("clicked", self.on_apply)
-        header.pack_end(self.apply_btn)
 
+        # --- BUTTONS ---
         self.update_btn = Gtk.Button(label=t("Update App"))
         self.update_btn.add_css_class("suggested-action")
         self.update_btn.set_visible(False)
@@ -47,103 +41,43 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack = Gtk.Stack()
         self.stack.set_vexpand(True)
         self.stack.set_hexpand(True)
-        
+
         sidebar = Gtk.StackSidebar()
         sidebar.set_stack(self.stack)
-        
+
         main_box.append(sidebar)
         main_box.append(self.stack)
 
+        # Seiten instantiieren
         self.mon_page = MonitorPage(self)
         self.about_page = AboutPage(self)
 
-        self.stack.add_titled(GeneralPage(self), "gen", t("General"))
-        self.stack.add_titled(self.mon_page, "mon", t("Monitor"))
-        self.stack.add_titled(WifiPage(self), "wifi", t("WLAN"))
-        self.stack.add_titled(AudioPage(self), "audio", t("Audio"))
-        self.stack.add_titled(UpdatePage(self), "upd", t("Updates"))
-        self.stack.add_titled(self.about_page, "about", t("About"))
+        # ── Stack befüllen ──────────────────────────────────────────────────
+        self.stack.add_titled(GeneralPage(self),      "gen",     t("General"))
+        self.stack.add_titled(self.mon_page,           "mon",     t("Monitor"))
+        self.stack.add_titled(WifiPage(self),          "wifi",    "WLAN")
+        self.stack.add_titled(AudioPage(self),         "audio",   t("Audio"))
+        self.stack.add_titled(WindowRulesPage(self),   "rules",   "Fenster-Regeln")
+        self.stack.add_titled(KeybindsPage(self),      "keys",    "Keybinds")
+        self.stack.add_titled(UpdatePage(self),        "upd",     t("Updates"))
+        self.stack.add_titled(self.about_page,         "about",   t("About"))
+        # ───────────────────────────────────────────────────────────────────
 
         self.stack.connect("notify::visible-child", self.on_page_change)
 
-    # --- FIX: Neue Methode für Toasts ---
     def add_toast(self, toast):
         self.toast_overlay.add_toast(toast)
 
     def on_page_change(self, stack, _):
         child = stack.get_visible_child()
-        self.apply_btn.set_visible(child == self.mon_page)
         self.update_btn.set_visible(child == self.about_page)
 
     def on_update_app(self, btn):
         script = APP_DATA_DIR / "app_update.sh"
         if script.exists():
-            try: subprocess.Popen(["kitty", str(script)])
-            except Exception as e: print(f"Err: {e}")
+            try:
+                subprocess.Popen(["kitty", str(script)])
+            except Exception as e:
+                print(f"Err: {e}")
         else:
             print("Update-Skript nicht gefunden.")
-
-    def on_apply(self, btn):
-        if self.stack.get_visible_child() != self.mon_page: return
-        
-        new_conf = self.mon_page.get_all_widget_settings()
-        save_monitor_config(new_conf)
-        
-        cmds, lines = self.gen_hypr_cmds(new_conf)
-        self.save_hypr_conf(lines)
-        
-        for c in cmds:
-            try: subprocess.run(c, check=True, timeout=2)
-            except Exception as e: print(f"Err cmd: {e}")
-            
-        GLib.timeout_add(500, self.mon_page.load_monitors)
-
-    def save_hypr_conf(self, lines):
-        try:
-            HYPR_MONITORS_CONF.parent.mkdir(parents=True, exist_ok=True)
-            with open(HYPR_MONITORS_CONF, 'w') as f:
-                f.write("# Auto-generated by Caelestia Settings\n")
-                f.write("\n".join(lines))
-        except Exception as e: print(f"Err Save: {e}")
-
-    def gen_hypr_cmds(self, conf):
-        cmds = []
-        lines = []
-        try:
-            res = subprocess.run(['hyprctl', 'monitors', '-j'], capture_output=True, text=True, check=True)
-            live = {m['name']: m for m in json.loads(res.stdout)}
-            
-            for name, sett in conf.items():
-                res_val = sett.get("resolution", "preferred").replace("Hz", "")
-                arr = sett.get("arrange", "auto")
-                tgt = sett.get("target")
-                
-                parts = [name]
-                if arr == "deaktivieren": parts.append("disable")
-                elif arr == "spiegeln":
-                    if tgt in live: parts.append(f"mirror,{tgt}")
-                    else: continue
-                elif arr == "auto": parts.extend([res_val, "auto", "1"])
-                elif arr == "current_pos":
-                    if name in live: parts.extend([res_val, f"{live[name]['x']}x{live[name]['y']}", "1"])
-                    else: parts.extend([res_val, "auto", "1"])
-                elif arr in ["rechts", "links", "darueber", "darunter"]:
-                    if tgt in live:
-                        t = live[tgt]
-                        try:
-                            w, h = map(int, res_val.split('@')[0].split('x'))
-                        except: w, h = 1920, 1080
-                        nx, ny = 0, 0
-                        if arr == "rechts": nx, ny = t['x'] + t['width'], t['y']
-                        elif arr == "links": nx, ny = t['x'] - w, t['y']
-                        elif arr == "darunter": nx, ny = t['x'], t['y'] + t['height']
-                        elif arr == "darueber": nx, ny = t['x'], t['y'] - h
-                        parts.extend([res_val, f"{nx}x{ny}", "1"])
-                    else: continue
-                else: parts.extend([res_val, "auto", "1"])
-                
-                final = ",".join(parts)
-                cmds.append(["hyprctl", "keyword", "monitor", final])
-                lines.append(f"monitor = {final}")
-        except Exception as e: print(f"Err Gen: {e}")
-        return cmds, lines
