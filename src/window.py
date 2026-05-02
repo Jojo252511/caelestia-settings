@@ -15,7 +15,7 @@ class MainWindow(Adw.ApplicationWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(**kwargs)
         self.set_title(t("Caelestia Settings"))
-        self.set_default_size(860, 640)
+        self.set_default_size(1100, 880)
 
         # --- ToastOverlay als Haupt-Container ---
         self.toast_overlay = Adw.ToastOverlay()

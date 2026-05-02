@@ -15,9 +15,10 @@ UPDATE_STEPS = [
 
 UPDATE_SCRIPT = """#!/usr/bin/env bash
 set -e
-# Passwort von stdin lesen und sudo-Cache füllen
-# (sudo -S liest Passwort von stdin, -v verlängert nur den Cache)
+# Passwort kommt auf stdin — sudo-Cache füllen, danach läuft alles ohne Passwort
+read -r SUDO_PASSWD
 echo "$SUDO_PASSWD" | sudo -S -v 2>/dev/null
+unset SUDO_PASSWD
 echo "::step:: System-Pakete aktualisieren…"
 yay -Syu --needed hyprlock swww --noconfirm
 echo "::step:: Audio-Dienste neu starten…"
@@ -26,7 +27,7 @@ echo "::done::"
 if [[ "$1" == "-r" ]]; then
     echo "::step:: Neustart wird vorbereitet…"
     sleep 5
-    echo "$SUDO_PASSWD" | sudo -S reboot
+    sudo reboot
 fi
 """
 
@@ -162,8 +163,11 @@ class UpdatePage(Gtk.Box):
         dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("ok")
 
-        # Enter in Passwortfeld → Dialog bestätigen
-        pwd_entry.connect("activate", lambda _: dialog.response("ok"))
+        # Enter in Passwortfeld → Dialog bestätigen und schließen
+        def on_entry_activate(_entry):
+            dialog.response("ok")
+            dialog.close()
+        pwd_entry.connect("activate", on_entry_activate)
 
         def on_response(dlg, response):
             if response == "ok":
@@ -208,18 +212,18 @@ class UpdatePage(Gtk.Box):
 
     def _run_update(self, args: list[str], password: str):
         try:
-            # Passwort als Umgebungsvariable übergeben (nicht als Argument!)
-            env = os.environ.copy()
-            env["SUDO_PASSWD"] = password
-
             self._process = subprocess.Popen(
                 args,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                env=env,
             )
+            # Passwort auf stdin schreiben — Skript liest es mit `read`
+            self._process.stdin.write(password + "\n")
+            self._process.stdin.flush()
+            self._process.stdin.close()
             password = ""   # Passwort sofort aus Speicher löschen
 
             step_count = 0
