@@ -218,4 +218,4 @@ IS_GERMAN = False  # force English
 
 **Jojo252511** — [GitHub](https://github.com/Jojo252511) — [Ko-fi](https://ko-fi.com/jojo2511)
 
-Part of the [Caelestia](https://github.com/caelestia-dots/caelestia) ecosystem.
+Made for the [Caelestia](https://github.com/caelestia-dots/caelestia) ecosystem.
