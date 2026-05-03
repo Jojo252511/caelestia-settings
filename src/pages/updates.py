@@ -15,14 +15,31 @@ UPDATE_STEPS = [
 
 UPDATE_SCRIPT = """#!/usr/bin/env bash
 set -e
-# Passwort kommt auf stdin — sudo-Cache füllen, danach läuft alles ohne Passwort
+# Passwort von stdin lesen
 read -r SUDO_PASSWD
-echo "$SUDO_PASSWD" | sudo -S -v 2>/dev/null
+
+# Temporäres askpass-Skript erstellen das das Passwort ausgibt
+ASKPASS_SCRIPT=$(mktemp /tmp/caelestia-askpass.XXXXXX)
+chmod 700 "$ASKPASS_SCRIPT"
+cat > "$ASKPASS_SCRIPT" << ASKEOF
+#!/bin/bash
+echo "$SUDO_PASSWD"
+ASKEOF
+
+# SUDO_ASKPASS setzen — alle sudo-Aufrufe (auch von yay) nutzen dieses Skript
+export SUDO_ASKPASS="$ASKPASS_SCRIPT"
 unset SUDO_PASSWD
+
+# Cache vorab füllen
+sudo --askpass -v 2>/dev/null
+
 echo "::step:: System-Pakete aktualisieren…"
 yay -Syu --needed hyprlock swww --noconfirm
 echo "::step:: Audio-Dienste neu starten…"
 systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service
+
+# Aufräumen
+rm -f "$ASKPASS_SCRIPT"
 echo "::done::"
 if [[ "$1" == "-r" ]]; then
     echo "::step:: Neustart wird vorbereitet…"
@@ -248,8 +265,18 @@ class UpdatePage(Gtk.Box):
 
             if rc == 0:
                 GLib.idle_add(self._on_finished, True, "Update erfolgreich abgeschlossen.")
+                subprocess.run([
+                    "notify-send", "Caelestia Settings",
+                    "System-Update erfolgreich abgeschlossen.",
+                    "--icon=software-update-available", "--urgency=normal",
+                ], capture_output=True)
             else:
                 GLib.idle_add(self._on_finished, False, f"Update fehlgeschlagen (Exit-Code {rc}).")
+                subprocess.run([
+                    "notify-send", "Caelestia Settings",
+                    f"Update fehlgeschlagen (Exit-Code {rc}).",
+                    "--icon=dialog-error", "--urgency=critical",
+                ], capture_output=True)
 
         except Exception as e:
             GLib.idle_add(self._on_finished, False, f"Fehler: {e}")

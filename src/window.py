@@ -9,13 +9,15 @@ from src.pages.updates import UpdatePage
 from src.pages.about import AboutPage
 from src.pages.window_rules import WindowRulesPage
 from src.pages.keybinds import KeybindsPage
+from src.pages.wallpaper import WallpaperPage
+from src.pages.workspaces import WorkspacesPage
 from src.lang import t
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, *args, **kwargs):
         super().__init__(**kwargs)
         self.set_title(t("Caelestia Settings"))
-        self.set_default_size(1100, 880)
+        self.set_default_size(1100, 840)
 
         # --- ToastOverlay als Haupt-Container ---
         self.toast_overlay = Adw.ToastOverlay()
@@ -54,7 +56,9 @@ class MainWindow(Adw.ApplicationWindow):
 
         # ── Stack befüllen ──────────────────────────────────────────────────
         self.stack.add_titled(GeneralPage(self),      "gen",     t("General"))
+        self.stack.add_titled(WallpaperPage(self),     "wall",    "Wallpaper")
         self.stack.add_titled(self.mon_page,           "mon",     t("Monitor"))
+        self.stack.add_titled(WorkspacesPage(self),   "ws",      "Workspaces")
         self.stack.add_titled(WifiPage(self),          "wifi",    "WLAN")
         self.stack.add_titled(AudioPage(self),         "audio",   t("Audio"))
         self.stack.add_titled(WindowRulesPage(self),   "rules",   "Fenster-Regeln")
