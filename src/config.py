@@ -1,3 +1,4 @@
+from src.lang import t
 import os
 import json
 from pathlib import Path
@@ -110,7 +111,7 @@ def parse_monitors_conf() -> dict:
 
     workspaces.sort(key=lambda w: w["number"])
 
-    ws_options = [("default", "Standard (keine Regel)")]
+    ws_options = [("default", t("Standard (no rule)"))]
     for ws in workspaces:
         label = f"WS {ws['number']}  –  {ws['monitor']}" if ws["monitor"] else f"Workspace {ws['number']}"
         if ws["default"]:
@@ -124,7 +125,7 @@ def parse_monitors_conf() -> dict:
 
 
 def _fallback_ws_options() -> list:
-    opts = [("default", "Standard (keine Regel)")]
+    opts = [("default", t("Standard (no rule)"))]
     for i in range(1, 21):
         opts.append((str(i), f"Workspace {i}"))
     for sp in ["sysmon", "music", "communication", "todo", "scratch"]:

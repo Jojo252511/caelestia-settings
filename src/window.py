@@ -57,11 +57,11 @@ class MainWindow(Adw.ApplicationWindow):
         # ── Stack befüllen ──────────────────────────────────────────────────
         self.stack.add_titled(GeneralPage(self),      "gen",     t("General"))
         self.stack.add_titled(WallpaperPage(self),     "wall",    "Wallpaper")
-        self.stack.add_titled(self.mon_page,           "mon",     t("Monitor"))
         self.stack.add_titled(WorkspacesPage(self),   "ws",      "Workspaces")
+        self.stack.add_titled(self.mon_page,           "mon",     t("Monitor"))
         self.stack.add_titled(WifiPage(self),          "wifi",    "WLAN")
         self.stack.add_titled(AudioPage(self),         "audio",   t("Audio"))
-        self.stack.add_titled(WindowRulesPage(self),   "rules",   "Fenster-Regeln")
+        self.stack.add_titled(WindowRulesPage(self),   "rules",   "Window Rules")
         self.stack.add_titled(KeybindsPage(self),      "keys",    "Keybinds")
         self.stack.add_titled(UpdatePage(self),        "upd",     t("Updates"))
         self.stack.add_titled(self.about_page,         "about",   t("About"))
