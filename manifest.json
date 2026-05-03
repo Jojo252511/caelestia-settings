@@ -1,6 +1,6 @@
 {
-  "name": "Caelestia Einstellungen",
-  "beschreibung": "Eine Einstellungs-App für Caelestia Hyprland-Setups.",
+  "name": "Caelestia Settings",
+  "beschreibung": "A settings app for Caelestia Hyprland setups.",
   "author": "Jojo252511",
-  "version": "0.2.0"
+  "version": "1.0.0"
 }

@@ -67,7 +67,7 @@ class UpdatePage(Gtk.Box):
 
         self.reboot_row = Adw.SwitchRow(
             title=t("Automatic Reboot"),
-            subtitle="Startet das System nach dem Update automatisch neu"
+            subtitle=t("Restarts system automatically after update")
         )
         settings_group.add(self.reboot_row)
 
@@ -147,8 +147,8 @@ class UpdatePage(Gtk.Box):
 
     def _show_password_dialog(self):
         dialog = Adw.MessageDialog(
-            heading="Passwort erforderlich",
-            body="Bitte gib dein sudo-Passwort ein, um das System-Update zu starten.",
+            heading=t("Password required"),
+            body=t("Enter your sudo password to start the system update."),
         )
         dialog.set_transient_for(self.main_window)
 
@@ -175,7 +175,7 @@ class UpdatePage(Gtk.Box):
         box.append(pwd_entry)
 
         dialog.set_extra_child(box)
-        dialog.add_response("cancel", "Abbrechen")
+        dialog.add_response("cancel", t("Cancel"))
         dialog.add_response("ok",     "Update starten")
         dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("ok")
@@ -193,7 +193,7 @@ class UpdatePage(Gtk.Box):
                 if password:
                     self._start_update(password)
                 else:
-                    self.main_window.add_toast(Adw.Toast.new("Kein Passwort eingegeben."))
+                    self.main_window.add_toast(Adw.Toast.new(t("No password entered.")))
 
         dialog.connect("response", on_response)
         dialog.present()
@@ -203,7 +203,7 @@ class UpdatePage(Gtk.Box):
     def _start_update(self, password: str):
         self._running = True
         self.start_btn.set_sensitive(False)
-        self.start_btn.set_label("Läuft…")
+        self.start_btn.set_label(t("Running..."))
         self.result_banner.set_revealed(False)
 
         # UI einblenden
@@ -212,7 +212,7 @@ class UpdatePage(Gtk.Box):
 
         # Log leeren
         self.log_buffer.set_text("")
-        self.step_label.set_text("Starte Update…")
+        self.step_label.set_text(t("Starting update..."))
         self.progress_bar.set_fraction(0.0)
 
         # Skript in tmp schreiben
@@ -264,7 +264,7 @@ class UpdatePage(Gtk.Box):
             rc = self._process.returncode
 
             if rc == 0:
-                GLib.idle_add(self._on_finished, True, "Update erfolgreich abgeschlossen.")
+                GLib.idle_add(self._on_finished, True, t("Update successful."))
                 subprocess.run([
                     "notify-send", "Caelestia Settings",
                     "System-Update erfolgreich abgeschlossen.",

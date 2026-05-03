@@ -1,5 +1,6 @@
 import subprocess
 from pathlib import Path
+from src.lang import t
 from gi.repository import Gtk, Adw, GLib
 from src.config import HYPR_MONITORS_CONF, parse_monitors_conf
 
@@ -140,24 +141,24 @@ class WorkspacesPage(Gtk.Box):
         bar.set_margin_start(12)
         bar.set_margin_end(12)
 
-        title = Gtk.Label(label="Workspaces")
+        title = Gtk.Label(label=t("Workspaces"))
         title.add_css_class("heading")
         title.set_hexpand(True)
         title.set_halign(Gtk.Align.START)
         bar.append(title)
 
-        add_btn = Gtk.Button(label="+ Hinzufügen")
+        add_btn = Gtk.Button(label=t("+ Add"))
         add_btn.connect("clicked", self._on_add)
         bar.append(add_btn)
 
-        save_btn = Gtk.Button(label="Speichern & Anwenden")
+        save_btn = Gtk.Button(label=t("Save & Apply"))
         save_btn.add_css_class("suggested-action")
         save_btn.connect("clicked", self._on_save)
         bar.append(save_btn)
 
         reload_btn = Gtk.Button()
         reload_btn.set_icon_name("view-refresh-symbolic")
-        reload_btn.set_tooltip_text("Neu laden")
+        reload_btn.set_tooltip_text(t("Reload"))
         reload_btn.connect("clicked", lambda _: self._load())
         bar.append(reload_btn)
 
@@ -192,8 +193,8 @@ class WorkspacesPage(Gtk.Box):
         if not self._workspaces:
             status = Adw.StatusPage()
             status.set_icon_name("preferences-desktop-display-symbolic")
-            status.set_title("Keine Workspaces gefunden")
-            status.set_description("Füge einen Workspace hinzu oder prüfe deine monitors.conf")
+            status.set_title(t("No workspaces found"))
+            status.set_description(t("Add a workspace or check your monitors.conf"))
             self._content.append(status)
             return
 
@@ -256,17 +257,17 @@ class WorkspacesPage(Gtk.Box):
 
     def _on_save(self, btn):
         btn.set_sensitive(False)
-        btn.set_label("Speichern…")
+        btn.set_label(t("Saving..."))
         try:
             self._save_and_reload()
             self.main_window.add_toast(
-                Adw.Toast.new("Workspaces gespeichert und angewendet.")
+                Adw.Toast.new(t("Workspaces saved and applied."))
             )
         except Exception as e:
             self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
         finally:
             btn.set_sensitive(True)
-            btn.set_label("Speichern & Anwenden")
+            btn.set_label(t("Save & Apply"))
 
     def _save_and_reload(self):
         data = [r.get_data() for r in self._rows]
@@ -288,7 +289,7 @@ class WorkspaceRow(Adw.ActionRow):
         # ── Nummer ──
         num_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         num_box.set_valign(Gtk.Align.CENTER)
-        num_lbl = Gtk.Label(label="Nr.")
+        num_lbl = Gtk.Label(label=t("No."))
         num_lbl.add_css_class("caption")
         num_box.append(num_lbl)
         self._num_spin = Gtk.SpinButton.new_with_range(1, 99, 1)
@@ -301,7 +302,7 @@ class WorkspaceRow(Adw.ActionRow):
         # ── Monitor ──
         mon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         mon_box.set_valign(Gtk.Align.CENTER)
-        mon_lbl = Gtk.Label(label="Monitor")
+        mon_lbl = Gtk.Label(label=t("Monitor"))
         mon_lbl.add_css_class("caption")
         mon_box.append(mon_lbl)
         self._mon_combo = Gtk.ComboBoxText()
@@ -318,7 +319,7 @@ class WorkspaceRow(Adw.ActionRow):
         # ── Default ──
         def_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         def_box.set_valign(Gtk.Align.CENTER)
-        def_lbl = Gtk.Label(label="Standard ★")
+        def_lbl = Gtk.Label(label=t("Default ★"))
         def_lbl.add_css_class("caption")
         def_box.append(def_lbl)
         self._default_check = Gtk.CheckButton()
@@ -331,13 +332,13 @@ class WorkspaceRow(Adw.ActionRow):
         # ── Persistent ──
         per_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         per_box.set_valign(Gtk.Align.CENTER)
-        per_lbl = Gtk.Label(label="Immer sichtbar")
+        per_lbl = Gtk.Label(label=t("Always visible"))
         per_lbl.add_css_class("caption")
         per_box.append(per_lbl)
         self._persist_check = Gtk.CheckButton()
         self._persist_check.set_active(ws["persistent"])
         self._persist_check.set_halign(Gtk.Align.CENTER)
-        self._persist_check.set_tooltip_text("Workspace bleibt auch ohne Fenster sichtbar")
+        self._persist_check.set_tooltip_text(t("Workspace stays visible even without windows"))
         self._persist_check.connect("toggled", self._on_changed)
         per_box.append(self._persist_check)
         self.add_suffix(per_box)

@@ -3,6 +3,7 @@ import os
 import subprocess
 import threading
 from pathlib import Path
+from src.lang import t
 from gi.repository import Gtk, Adw, GLib, GdkPixbuf
 
 _SHELL_JSON = Path.home() / ".config" / "caelestia" / "shell.json"
@@ -132,10 +133,10 @@ def _save_clock_settings(settings: dict):
 
 
 CLOCK_POSITIONS = [
-    ("top-right",    "Oben rechts"),
-    ("top-left",     "Oben links"),
-    ("bottom-right", "Unten rechts"),
-    ("bottom-left",  "Unten links"),
+    ("top-right",    t("Top right")),
+    ("top-left",     t("Top left")),
+    ("bottom-right", t("Bottom right")),
+    ("bottom-left",  t("Bottom left")),
 ]
 
 
@@ -313,19 +314,19 @@ class WallpaperPage(Gtk.Box):
         tab_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         tab_box.add_css_class("linked")
 
-        self._tab_img = Gtk.ToggleButton(label="🖼 Bilder")
+        self._tab_img = Gtk.ToggleButton(label=t("🖼 Images"))
         self._tab_img.set_active(True)
         self._tab_img.connect("toggled", self._on_tab_toggle)
         tab_box.append(self._tab_img)
 
-        self._tab_vid = Gtk.ToggleButton(label="🎬 Videos")
+        self._tab_vid = Gtk.ToggleButton(label=t("🎬 Videos"))
         self._tab_vid.set_group(self._tab_img)
         self._tab_vid.connect("toggled", self._on_tab_toggle)
         tab_box.append(self._tab_vid)
 
         bar.append(tab_box)
 
-        self._random_btn = Gtk.Button(label="🔀 Zufällig")
+        self._random_btn = Gtk.Button(label=t("🔀 Random"))
         self._random_btn.set_tooltip_text("Zufälliges Bild aus ~/Bilder/Wallpapers/")
         self._random_btn.connect("clicked", self._on_random)
         bar.append(self._random_btn)
@@ -337,7 +338,7 @@ class WallpaperPage(Gtk.Box):
 
         # Light/Dark
         self._mode_btn = Gtk.ToggleButton()
-        self._mode_btn.set_tooltip_text("Light / Dark Mode")
+        self._mode_btn.set_tooltip_text(t("Light / Dark Mode"))
         self._mode_btn.set_active(self._scheme_mode == "light")
         self._mode_btn.set_icon_name(
             "weather-clear-symbolic" if self._scheme_mode == "light"
@@ -348,7 +349,7 @@ class WallpaperPage(Gtk.Box):
 
         reload_btn = Gtk.Button()
         reload_btn.set_icon_name("view-refresh-symbolic")
-        reload_btn.set_tooltip_text("Neu laden")
+        reload_btn.set_tooltip_text(t("Reload"))
         reload_btn.connect("clicked", lambda _: self._reload())
         bar.append(reload_btn)
 
@@ -366,8 +367,8 @@ class WallpaperPage(Gtk.Box):
 
         # ── Desktop-Uhr Einstellungen (Expander) ─────────────────────────
         clock_expander = Adw.ExpanderRow()
-        clock_expander.set_title("Desktop-Uhr")
-        clock_expander.set_subtitle("Position, Größe und Sichtbarkeit")
+        clock_expander.set_title(t("Desktop clock"))
+        clock_expander.set_subtitle(t("Position, size and visibility"))
         clock_expander.set_margin_start(12)
         clock_expander.set_margin_end(12)
         clock_expander.set_margin_bottom(6)
@@ -380,13 +381,13 @@ class WallpaperPage(Gtk.Box):
         clk = _get_clock_settings()
 
         # An/Aus
-        self._clock_enabled = Adw.SwitchRow(title="Uhr anzeigen")
+        self._clock_enabled = Adw.SwitchRow(title=t("Show clock"))
         self._clock_enabled.set_active(clk.get("enabled", True))
         self._clock_enabled.connect("notify::active", self._on_clock_changed)
         clock_expander.add_row(self._clock_enabled)
 
         # Position
-        pos_row = Adw.ActionRow(title="Position")
+        pos_row = Adw.ActionRow(title=t("Position"))
         self._clock_pos = Gtk.ComboBoxText()
         self._clock_pos.set_valign(Gtk.Align.CENTER)
         for pid, plabel in CLOCK_POSITIONS:
@@ -397,7 +398,7 @@ class WallpaperPage(Gtk.Box):
         clock_expander.add_row(pos_row)
 
         # Größe
-        scale_row = Adw.ActionRow(title="Größe")
+        scale_row = Adw.ActionRow(title=t("Size"))
         scale_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         scale_box.set_valign(Gtk.Align.CENTER)
         self._clock_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.5, 3.0, 0.1)
@@ -410,7 +411,7 @@ class WallpaperPage(Gtk.Box):
         clock_expander.add_row(scale_row)
 
         # Farben invertieren
-        self._clock_invert = Adw.SwitchRow(title="Farben invertieren")
+        self._clock_invert = Adw.SwitchRow(title=t("Invert colors"))
         self._clock_invert.set_active(clk.get("invertColors", False))
         self._clock_invert.connect("notify::active", self._on_clock_changed)
         clock_expander.add_row(self._clock_invert)
@@ -499,7 +500,7 @@ class WallpaperPage(Gtk.Box):
             self.main_window.add_toast(Adw.Toast.new(f"Video: {path.name}"))
         except FileNotFoundError:
             self.main_window.add_toast(
-                Adw.Toast.new("mpvpaper nicht gefunden — yay -S mpvpaper")
+                Adw.Toast.new(t("mpvpaper not found — yay -S mpvpaper"))
             )
         except Exception as e:
             self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
@@ -516,8 +517,8 @@ class WallpaperPage(Gtk.Box):
         self._stop_mpv()
         try:
             subprocess.Popen(["caelestia", "wallpaper", "-r", str(_get_image_dir())])
-            self._show_banner("Zufälliger Wallpaper gesetzt")
-            self.main_window.add_toast(Adw.Toast.new("Zufälliger Wallpaper gesetzt"))
+            self._show_banner(t("Random wallpaper set"))
+            self.main_window.add_toast(Adw.Toast.new(t("Random wallpaper set")))
         except Exception as e:
             self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
 

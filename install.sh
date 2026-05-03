@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Installer für die modulare Caelestia Settings App
+# Installer for the Caelestia Settings App
 #
 set -e
 
@@ -9,7 +9,7 @@ echo "###   Caelestia Settings Installer  ###"
 echo "#######################################"
 echo
 
-# --- 1. Finde das Quellverzeichnis ---
+# --- 1. Find source directory ---
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 MAIN_APP_SRC="$SCRIPT_DIR/main.py"
 SRC_FOLDER="$SCRIPT_DIR/src"
@@ -17,22 +17,22 @@ UPDATE_SCRIPT_SRC="$SCRIPT_DIR/app_update.sh"
 MANIFEST_SRC="$SCRIPT_DIR/manifest.json"
 
 if [ ! -f "$MAIN_APP_SRC" ] || [ ! -d "$SRC_FOLDER" ]; then
-    echo "FEHLER: 'main.py' oder 'src/' Ordner nicht gefunden!"
-    echo "Bitte stelle sicher, dass 'install.sh', 'main.py' und 'src/' im selben Ordner liegen."
+    echo "ERROR: 'main.py' or 'src/' folder not found!"
+    echo "Please make sure 'install.sh', 'main.py' and 'src/' are in the same directory."
     exit 1
 fi
-echo ">>> Quellcode gefunden in: $SCRIPT_DIR"
+echo ">>> Source code found in: $SCRIPT_DIR"
 echo
 
-# --- 2. Installiere System-Abhängigkeiten ---
-echo ">>> SCHRITT 1: Installiere System-Abhängigkeiten..."
-echo "Das Skript benötigt 'python-gobject', 'libadwaita', 'pamixer' und 'git'."
-echo "Bitte gib dein Passwort für sudo ein:"
+# --- 2. Install system dependencies ---
+echo ">>> STEP 1: Installing system dependencies..."
+echo "The script requires 'python-gobject', 'libadwaita', 'pamixer' and 'git'."
+echo "Please enter your sudo password:"
 sudo pacman -S --needed --noconfirm python-gobject libadwaita pamixer git
-echo "--- Abhängigkeiten sind installiert."
+echo "--- Dependencies installed."
 echo
 
-# --- 3. Definiere Benutzer-Pfade ---
+# --- 3. Define user paths ---
 APP_DATA_DIR="$HOME/.local/share/caelestia-settings"
 BIN_DIR="$HOME/.local/bin"
 APP_LAUNCHER_DIR="$HOME/.local/share/applications"
@@ -41,62 +41,62 @@ APP_TARGET_MAIN="$APP_DATA_DIR/main.py"
 APP_TARGET_BIN="$BIN_DIR/caelestia-settings"
 APP_TARGET_DESKTOP="$APP_LAUNCHER_DIR/org.caelestia.settings.desktop"
 
-# --- 4. Erstelle Verzeichnisse & Bereinige alte Installation ---
-echo ">>> SCHRITT 2: Bereite Installationsordner vor..."
+# --- 4. Create directories & clean old installation ---
+echo ">>> STEP 2: Preparing installation directory..."
 mkdir -p "$BIN_DIR"
 mkdir -p "$APP_LAUNCHER_DIR"
 
 if [ -d "$APP_DATA_DIR" ]; then
-    echo "   ...Entferne alte Installation in $APP_DATA_DIR"
+    echo "   ...Removing old installation at $APP_DATA_DIR"
     rm -rf "$APP_DATA_DIR"
 fi
 mkdir -p "$APP_DATA_DIR"
-echo "--- Verzeichnisse bereit."
+echo "--- Directories ready."
 echo
 
-# --- 5. Installiere die Anwendung (Kopieren) ---
-echo ">>> SCHRITT 3: Installiere die Anwendung..."
-echo "   ...Kopiere 'main.py' nach $APP_DATA_DIR"
+# --- 5. Install the application ---
+echo ">>> STEP 3: Installing the application..."
+echo "   ...Copying 'main.py' to $APP_DATA_DIR"
 cp "$MAIN_APP_SRC" "$APP_DATA_DIR/"
 chmod +x "$APP_TARGET_MAIN"
 
-echo "   ...Kopiere 'src/' Ordner nach $APP_DATA_DIR"
+echo "   ...Copying 'src/' folder to $APP_DATA_DIR"
 cp -r "$SRC_FOLDER" "$APP_DATA_DIR/"
 
-# Update-Skript kopieren
+# Copy update script
 if [ -f "$UPDATE_SCRIPT_SRC" ]; then
-    echo "   ...Kopiere 'app_update.sh' nach $APP_DATA_DIR"
+    echo "   ...Copying 'app_update.sh' to $APP_DATA_DIR"
     cp "$UPDATE_SCRIPT_SRC" "$APP_DATA_DIR/"
     chmod +x "$APP_DATA_DIR/app_update.sh"
 else
-    echo "WARNUNG: 'app_update.sh' nicht gefunden. Update-Funktion wird nicht verfügbar sein."
+    echo "WARNING: 'app_update.sh' not found. The update function will not be available."
 fi
 
-# Manifest kopieren
+# Copy manifest
 if [ -f "$MANIFEST_SRC" ]; then
-    echo "   ...Kopiere 'manifest.json' nach $APP_DATA_DIR"
+    echo "   ...Copying 'manifest.json' to $APP_DATA_DIR"
     cp "$MANIFEST_SRC" "$APP_DATA_DIR/"
 else
-    echo "WARNUNG: 'manifest.json' nicht im Quellordner gefunden!"
-    echo "Erstelle Dummy-Manifest, damit die App starten kann."
+    echo "WARNING: 'manifest.json' not found in source directory!"
+    echo "Creating dummy manifest so the app can start."
     echo '{"version": "unknown"}' > "$APP_DATA_DIR/manifest.json"
 fi
 
-echo "   ...Erstelle Befehl-Alias (Symlink) in $APP_TARGET_BIN"
+echo "   ...Creating command alias (symlink) at $APP_TARGET_BIN"
 ln -sf "$APP_TARGET_MAIN" "$APP_TARGET_BIN"
-echo "--- Anwendung installiert."
+echo "--- Application installed."
 echo
 
-# --- 6. Stelle sicher, dass ~/.local/bin im PATH ist ---
-echo ">>> SCHRITT 4: Stelle sicher, dass ~/.local/bin im PATH ist..."
+# --- 6. Make sure ~/.local/bin is in PATH ---
+echo ">>> STEP 4: Ensuring ~/.local/bin is in PATH..."
 
 FISH_CONFIG_DIR="$HOME/.config/fish"
 FISH_CONFIG="$FISH_CONFIG_DIR/config.fish"
 FISH_PATH_CMD="fish_add_path $HOME/.local/bin"
-if [ -d "$FISH_CONFIG_DIR" ]; then 
+if [ -d "$FISH_CONFIG_DIR" ]; then
     mkdir -p "$FISH_CONFIG_DIR" && touch "$FISH_CONFIG"
     if ! grep -q -F "$FISH_PATH_CMD" "$FISH_CONFIG"; then
-        echo "   ...Füge PATH zur Fish-Konfiguration hinzu."
+        echo "   ...Adding PATH to Fish config."
         echo "" >> "$FISH_CONFIG"
         echo "# Caelestia Settings PATH" >> "$FISH_CONFIG"
         echo "$FISH_PATH_CMD" >> "$FISH_CONFIG"
@@ -106,32 +106,32 @@ fi
 PROFILE_CONFIG="$HOME/.profile"
 PROFILE_PATH_CMD='export PATH="$HOME/.local/bin:$PATH"'
 if ! grep -q -F "$PROFILE_PATH_CMD" "$PROFILE_CONFIG" 2>/dev/null; then
-    echo "   ...Füge PATH zur Fallback-Datei hinzu ($PROFILE_CONFIG)."
+    echo "   ...Adding PATH to fallback profile ($PROFILE_CONFIG)."
     echo "" >> "$PROFILE_CONFIG"
     echo "# Caelestia Settings PATH" >> "$PROFILE_CONFIG"
     echo "$PROFILE_PATH_CMD" >> "$PROFILE_CONFIG"
 fi
-echo "--- PATH-Konfiguration abgeschlossen."
+echo "--- PATH configuration done."
 echo
 
-# --- 7. Erstelle den App-Menü-Eintrag ---
-echo ">>> SCHRITT 5: Erstelle Eintrag im App-Menü..."
+# --- 7. Create app menu entry ---
+echo ">>> STEP 5: Creating app menu entry..."
 cat > "$APP_TARGET_DESKTOP" <<- EOM
 [Desktop Entry]
-Version=0.0.4
-Name=Caelestia Einstellungen
-Comment=Hyprland-, Monitor- und Audio-Einstellungen verwalten
+Version=1.0.0
+Name=Caelestia Settings
+Comment=Manage Hyprland, monitor and audio settings
 Exec=caelestia-settings
 Icon=preferences-system-symbolic
 Terminal=false
 Type=Application
 Categories=Settings;System;
 EOM
-echo "--- App-Menü-Eintrag erstellt."
+echo "--- App menu entry created."
 echo
 
-# --- 8. Füge Hyprland-Konfiguration hinzu ---
-echo ">>> SCHRITT 6: Konfiguriere Hyprland..."
+# --- 8. Configure Hyprland ---
+echo ">>> STEP 6: Configuring Hyprland..."
 
 HYPR_CONFIG_DIR="$HOME/.config/hypr"
 HYPR_CONFIG_FILE="$HYPR_CONFIG_DIR/hyprland.conf"
@@ -145,13 +145,13 @@ touch "$RULES_CONFIG_FILE"
 
 RULES_SOURCE="source = $RULES_CONFIG_FILE"
 if ! grep -q -F "$RULES_SOURCE" "$HYPR_CONFIG_FILE"; then
-    echo "   ...Füge 'source' Regel für rules.conf zur hyprland.conf hinzu."
+    echo "   ...Adding 'source' rule for rules.conf to hyprland.conf."
     echo "$RULES_SOURCE" >> "$HYPR_CONFIG_FILE"
 fi
 
 NEW_RULES_TAG="# Caelestia Settings Rules"
 if ! grep -q -F "$NEW_RULES_TAG" "$RULES_CONFIG_FILE"; then
-    echo "   ...Schreibe Window-Rules in $RULES_CONFIG_FILE."
+    echo "   ...Writing window rules to $RULES_CONFIG_FILE."
     cat >> "$RULES_CONFIG_FILE" <<- EOM
 
 $NEW_RULES_TAG
@@ -159,26 +159,25 @@ windowrule = float true, match:class org\.caelestia\.settings
 windowrule = center 1, match:class org\.caelestia\.settings
 EOM
 else
-    echo "   ...Window-Rules existieren bereits in rules.conf."
+    echo "   ...Window rules already exist in rules.conf."
 fi
 
-# Diese gehören in die keybinds.conf!!!
 BIND_CMD="bind = SUPER, I, exec, caelestia-settings"
 if ! grep -q -F "bind = SUPER, I, exec, caelestia-settings" "$HYPR_CONFIG_FILE"; then
-    echo "   ...Füge Tastenkürzel (Super+I) zur hyprland.conf hinzu."
+    echo "   ...Adding shortcut (Super+I) to hyprland.conf."
     echo "$BIND_CMD" >> "$HYPR_CONFIG_FILE"
 fi
 
 AUTH_CMD="exec-once = /usr/lib/polkit-kde-authentication-agent-1"
 if ! grep -q -F "/usr/lib/polkit-kde-authentication-agent-1" "$HYPR_CONFIG_FILE"; then
-    echo "   ...Füge Polkit-Agent zur hyprland.conf hinzu."
+    echo "   ...Adding Polkit agent to hyprland.conf."
     echo "$AUTH_CMD" >> "$HYPR_CONFIG_FILE"
 fi
 
 MONITOR_CONFIG_FILE_PATH="$HYPR_INCLUDES_DIR/monitors.conf"
 SOURCE_LINE="source = $MONITOR_CONFIG_FILE_PATH"
 if ! grep -q -F "$SOURCE_LINE" "$HYPR_CONFIG_FILE"; then
-    echo "   ...Füge 'source' Regel für Monitore hinzu."
+    echo "   ...Adding 'source' rule for monitors.conf."
     cat >> "$HYPR_CONFIG_FILE" <<- EOM
 
 # Caelestia Monitor Config
@@ -186,32 +185,25 @@ $SOURCE_LINE
 EOM
 fi
 
-echo "--- Hyprland-Konfiguration abgeschlossen."
+echo "--- Hyprland configuration done."
 echo
 
-# --- 9. Fertig ---
+# --- 9. Done ---
 echo "#######################################"
-echo "###      INSTALLATION FERTIG      ###"
+echo "###      INSTALLATION COMPLETE     ###"
 echo "#######################################"
 echo
-echo "Die Caelestia Settings App ist jetzt installiert!"
-
-echo "!!! WICHTIG: Bitte logge dich jetzt aus und wieder ein (oder starte den PC neu). !!!"
+echo "Caelestia Settings is now installed!"
 echo
-echo "Nach dem Neustart kannst du die App:"
-echo "1. Im App-Menü (als 'Caelestia Einstellungen') finden."
-echo "2. Im Terminal mit dem Befehl 'caelestia-settings' starten."
-echo "3. Mit 'Super + I'"
+echo "!!! IMPORTANT: Please log out and back in (or restart your PC). !!!"
 echo
-echo "--- Optional: Tastenkürzel (Super+I) entfernen---"
-echo "Um die App nicht mit Super+I zu starten, entferne bitte manuell"
-echo "folgende Zeile in deiner '~/.config/hypr/hyprland.conf' entfernen:"
+echo "After restarting you can launch the app:"
+echo "1. From the app menu as 'Caelestia Settings'"
+echo "2. From the terminal with 'caelestia-settings'"
+echo "3. With 'Super + I'"
+echo
+echo "--- Optional: Remove the Super+I shortcut ---"
+echo "To disable the Super+I keybind, remove the following line"
+echo "from your '~/.config/hypr/hyprland.conf':"
 echo
 echo "bind = SUPER, I, exec, caelestia-settings"
-echo
-
-#Bei älteren Instalationen muss das in der hyperland.conf entfernt werden
-
-## Caelestia Settings Rules
-#windowrule = float, class:(org.caelestia.settings)
-#windowrule = center, class:(org.caelestia.settings)

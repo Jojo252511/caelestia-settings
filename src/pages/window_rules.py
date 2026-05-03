@@ -3,6 +3,7 @@ import json
 import subprocess
 import threading
 from pathlib import Path
+from src.lang import t
 from gi.repository import Gtk, Adw, GLib
 from src.config import (
     load_window_rules_config, save_window_rules_config,
@@ -11,9 +12,9 @@ from src.config import (
 )
 
 FLOAT_OPTIONS = [
-    ("default", "Standard (keine Regel)"),
+    ("default", t("Standard (no rule)")),
     ("true",    "Float"),
-    ("false",   "Kein Float"),
+    ("false",   t("No float")),
 ]
 
 MATCH_TYPE_OPTIONS = [
@@ -162,8 +163,8 @@ class WindowRulesPage(Gtk.Box):
         notebook = Gtk.Notebook()
         notebook.set_vexpand(True)
         self.append(notebook)
-        notebook.append_page(self._build_app_tab(),      Gtk.Label(label="App-Regeln"))
-        notebook.append_page(self._build_existing_tab(), Gtk.Label(label="Bestehende Regeln"))
+        notebook.append_page(self._build_app_tab(),      Gtk.Label(label=t("App rules")))
+        notebook.append_page(self._build_existing_tab(), Gtk.Label(label=t("Existing rules")))
 
     # ── Tab 1 ─────────────────────────────────────────────────────────────────
 
@@ -176,10 +177,10 @@ class WindowRulesPage(Gtk.Box):
         bar.set_margin_start(12); bar.set_margin_end(12)
         self.search_entry = Gtk.SearchEntry()
         self.search_entry.set_hexpand(True)
-        self.search_entry.set_placeholder_text("App suchen…")
+        self.search_entry.set_placeholder_text(t("Search app..."))
         self.search_entry.connect("search-changed", self._on_search_changed)
         bar.append(self.search_entry)
-        save_btn = Gtk.Button(label="Speichern & Anwenden")
+        save_btn = Gtk.Button(label=t("Save & Apply"))
         save_btn.add_css_class("suggested-action")
         save_btn.connect("clicked", self._on_save_clicked)
         bar.append(save_btn)
@@ -187,8 +188,8 @@ class WindowRulesPage(Gtk.Box):
 
         # Konflikt-Banner
         self.conflict_banner = Adw.Banner()
-        self.conflict_banner.set_title("Konflikte erkannt")
-        self.conflict_banner.set_button_label("Details")
+        self.conflict_banner.set_title(t("Conflicts detected"))
+        self.conflict_banner.set_button_label(t("Details"))
         self.conflict_banner.connect("button-clicked", self._show_conflict_dialog)
         self.conflict_banner.set_revealed(False)
         box.append(self.conflict_banner)
@@ -240,7 +241,7 @@ class WindowRulesPage(Gtk.Box):
             seen[wm] = ws
         self._conflicts = conflicts
         if conflicts:
-            self.conflict_banner.set_title(f"{len(conflicts)} Konflikt(e) erkannt")
+            self.conflict_banner.set_title(f"{len(conflicts)} {t("conflicts detected")}")
             self.conflict_banner.set_revealed(True)
         else:
             self.conflict_banner.set_revealed(False)
@@ -258,7 +259,7 @@ class WindowRulesPage(Gtk.Box):
 
         # Button während des Speicherns deaktivieren → verhindert Doppelklick
         btn.set_sensitive(False)
-        btn.set_label("Speichern…")
+        btn.set_label(t("Saving..."))
 
         # Welche wm_classes haben bereits manuelle (nicht-managed) Regeln?
         manual_classes: set[str] = set()
@@ -285,14 +286,14 @@ class WindowRulesPage(Gtk.Box):
         try:
             _write_rules_conf(_generate_rules_lines(rules))
             subprocess.run(["hyprctl", "reload"], timeout=3)
-            self.main_window.add_toast(Adw.Toast.new("Regeln gespeichert und Hyprland neu geladen."))
+            self.main_window.add_toast(Adw.Toast.new(t("Rules saved and Hyprland reloaded.")))
             self._existing_rules = parse_rules_conf()
             self._refresh_existing_tab()
         except Exception as e:
             self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
         finally:
             btn.set_sensitive(True)
-            btn.set_label("Speichern & Anwenden")
+            btn.set_label(t("Save & Apply"))
 
     # ── Tab 2 ─────────────────────────────────────────────────────────────────
 
@@ -300,8 +301,8 @@ class WindowRulesPage(Gtk.Box):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         lbl = Gtk.Label()
         lbl.set_markup(
-            "<small>Alle <b>windowrule</b>-Einträge aus <tt>rules.conf</tt>  "
-            "–  🔒 manuell  /  ⚙ von dieser App verwaltet</small>"
+            "<small>All <b>windowrule</b> entries from <tt>rules.conf</tt>  "
+            "–  🔒 manual  /  ⚙ managed by this app</small>"
         )
         lbl.set_margin_top(10); lbl.set_margin_bottom(6); lbl.set_margin_start(12)
         lbl.set_halign(Gtk.Align.START)
@@ -359,8 +360,8 @@ class AppRuleRow(Adw.ActionRow):
 
 
         self.set_title(app_info["name"])
-        sub = app_info["wm_class"] or "Unbekannte Klasse"
-        if self._is_web_app: sub += "  •  Web-App"
+        sub = app_info["wm_class"] or t("Unknown class")
+        if self._is_web_app: sub += "  •  Web app"
         self.set_subtitle(sub)
 
         # Icon
@@ -392,7 +393,7 @@ class AppRuleRow(Adw.ActionRow):
         default_match = "initial_title" if self._is_web_app else "class"
         self.match_combo = _make_suffix("Match",     MATCH_TYPE_OPTIONS, "match_type", default_match)
         self.ws_combo    = _make_suffix("Workspace", workspace_options,  "workspace",  "default")
-        self.float_combo = _make_suffix("Verhalten", FLOAT_OPTIONS,      "float",      "default")
+        self.float_combo = _make_suffix(t("Behavior"), FLOAT_OPTIONS,      "float",      "default")
 
         # Ausgangszustand merken — zum Vergleich beim Speichern
         self._initial_state = {

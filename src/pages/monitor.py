@@ -2,21 +2,22 @@ import json
 import math
 import subprocess
 import cairo
+from src.lang import t
 from gi.repository import Gtk, Adw, Gdk, GLib
 
 # ── Konstanten ────────────────────────────────────────────────────────────────
 
 ROTATION_OPTIONS = [
-    ("0",   "Normal (0°)"),
-    ("1",   "90° rechts"),
+    ("0",   t("Normal (0°)")),
+    ("1",   t("90° right")),
     ("2",   "180°"),
-    ("3",   "270° rechts / 90° links"),
+    ("3",   t("270° right / 90° left")),
 ]
 
 BITDEPTH_OPTIONS = [
-    ("",   "Standard (8 bit)"),
+    ("",   t("Standard (8 bit)")),
     ("8",  "8 bit"),
-    ("10", "10 bit (HDR)"),
+    ("10", t("10 bit (HDR)")),
 ]
 
 # Farben für Monitor-Rechtecke (Index → RGBA)
@@ -531,8 +532,8 @@ class MonitorSettingsPanel(Gtk.Box):
 
         self._placeholder = Adw.StatusPage()
         self._placeholder.set_icon_name("video-display-symbolic")
-        self._placeholder.set_title("Kein Monitor ausgewählt")
-        self._placeholder.set_description("Klicke auf einen Monitor in der Vorschau.")
+        self._placeholder.set_title(t("No monitor selected"))
+        self._placeholder.set_description(t("Click on a monitor in the preview."))
         self._placeholder.set_vexpand(True)
         self.append(self._placeholder)
 
@@ -554,7 +555,7 @@ class MonitorSettingsPanel(Gtk.Box):
         scroller.set_child(self._group)
 
         # ── Auflösung ──
-        res_row = Adw.ActionRow(title="Auflösung")
+        res_row = Adw.ActionRow(title=t("Resolution"))
         self._res_combo = Gtk.ComboBoxText()
         self._res_combo.set_valign(Gtk.Align.CENTER)
         self._res_combo.connect("changed", self._on_res_changed)
@@ -562,7 +563,7 @@ class MonitorSettingsPanel(Gtk.Box):
         self._group.add(res_row)
 
         # ── Bildwiederholrate ──
-        hz_row = Adw.ActionRow(title="Bildwiederholrate")
+        hz_row = Adw.ActionRow(title=t("Refresh rate"))
         self._hz_combo = Gtk.ComboBoxText()
         self._hz_combo.set_valign(Gtk.Align.CENTER)
         self._hz_combo.connect("changed", self._on_hz_changed)
@@ -570,7 +571,7 @@ class MonitorSettingsPanel(Gtk.Box):
         self._group.add(hz_row)
 
         # ── Drehung ──
-        rot_row = Adw.ActionRow(title="Drehung")
+        rot_row = Adw.ActionRow(title=t("Rotation"))
         self._rot_combo = Gtk.ComboBoxText()
         self._rot_combo.set_valign(Gtk.Align.CENTER)
         for r_id, r_lbl in ROTATION_OPTIONS:
@@ -580,7 +581,7 @@ class MonitorSettingsPanel(Gtk.Box):
         self._group.add(rot_row)
 
         # ── Farbtiefe ──
-        bd_row = Adw.ActionRow(title="Farbtiefe")
+        bd_row = Adw.ActionRow(title=t("Bit depth"))
         self._bd_combo = Gtk.ComboBoxText()
         self._bd_combo.set_valign(Gtk.Align.CENTER)
         for b_id, b_lbl in BITDEPTH_OPTIONS:
@@ -590,7 +591,7 @@ class MonitorSettingsPanel(Gtk.Box):
         self._group.add(bd_row)
 
         # ── Skalierung ──
-        scale_row = Adw.ActionRow(title="Skalierung")
+        scale_row = Adw.ActionRow(title=t("Scale"))
         self._scale_spin = Gtk.SpinButton.new_with_range(0.25, 4.0, 0.25)
         self._scale_spin.set_digits(2)
         self._scale_spin.set_valign(Gtk.Align.CENTER)
@@ -599,21 +600,21 @@ class MonitorSettingsPanel(Gtk.Box):
         self._group.add(scale_row)
 
         # ── Aktiviert ──
-        self._enabled_row = Adw.SwitchRow(title="Monitor aktiviert")
+        self._enabled_row = Adw.SwitchRow(title=t("Monitor enabled"))
         self._enabled_row.connect("notify::active", self._on_enabled_changed)
         self._group.add(self._enabled_row)
 
         # ── Hauptmonitor ──
         self._primary_row = Adw.SwitchRow(
-            title="Hauptmonitor",
-            subtitle="xrandr --primary (für X11-Apps und Tray)"
+            title=t("Primary monitor"),
+            subtitle=t("xrandr --primary (for X11 apps and tray)")
         )
         self._primary_row.connect("notify::active", self._on_primary_changed)
         self._group.add(self._primary_row)
 
         # ── Taskleiste ──
         self._bar_row = Adw.SwitchRow(
-            title="Taskleiste immer anzeigen",
+            title=t("Always show taskbar"),
             subtitle="shell.json: bar.persistent"
         )
         self._bar_row.connect("notify::active", self._on_bar_changed)
@@ -740,7 +741,7 @@ class MonitorPage(Gtk.Box):
         self.append(canvas_frame)
 
         # Canvas-Hinweis
-        hint = Gtk.Label(label="Klicken zum Auswählen  •  Ziehen zum Verschieben")
+        hint = Gtk.Label(label=t("Click to select  •  Drag to move"))
         hint.add_css_class("caption")
         hint.set_margin_top(4)
         hint.set_margin_bottom(8)
@@ -761,11 +762,11 @@ class MonitorPage(Gtk.Box):
         btn_box.set_margin_bottom(12)
         btn_box.set_margin_end(12)
 
-        reload_btn = Gtk.Button(label="Neu laden")
+        reload_btn = Gtk.Button(label=t("Reload"))
         reload_btn.connect("clicked", lambda _: self.load_monitors())
         btn_box.append(reload_btn)
 
-        apply_btn = Gtk.Button(label="Anwenden")
+        apply_btn = Gtk.Button(label=t("Apply"))
         apply_btn.add_css_class("suggested-action")
         apply_btn.connect("clicked", self._on_apply)
         btn_box.append(apply_btn)
@@ -810,7 +811,7 @@ class MonitorPage(Gtk.Box):
             _set_bar_persistent(m.name, m.bar_persistent)
         GLib.timeout_add(600, self.load_monitors)
         self.main_window.add_toast(
-            Adw.Toast.new("Monitor-Konfiguration gespeichert und angewendet.")
+            Adw.Toast.new(t("Monitor configuration saved and applied."))
         )
 
     # Kompatibilität mit window.py (apply_btn dort entfernen wir später)

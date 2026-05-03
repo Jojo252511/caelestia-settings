@@ -3,6 +3,7 @@ import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from src.lang import t
 from gi.repository import Gtk, Adw, GLib
 
 KEYBINDS_CONF = Path.home() / ".config/hypr/hyprland/keybinds.conf"
@@ -159,15 +160,15 @@ class KeybindDialog(Gtk.Dialog):
 
     def __init__(self, parent, bind: dict | None = None):
         super().__init__(
-            title="Keybind bearbeiten" if bind else "Neue Keybind",
+            title=t("Edit keybind") if bind else t("New keybind"),
             transient_for=parent,
             modal=True,
         )
         self._line_number = bind["line_number"] if bind else None
         self.set_default_size(480, -1)
 
-        self.add_button("Abbrechen", Gtk.ResponseType.CANCEL)
-        save_btn = self.add_button("Speichern", Gtk.ResponseType.OK)
+        self.add_button(t("Cancel"), Gtk.ResponseType.CANCEL)
+        save_btn = self.add_button(t("Save"), Gtk.ResponseType.OK)
         save_btn.add_css_class("suggested-action")
         self.set_default_response(Gtk.ResponseType.OK)
 
@@ -184,7 +185,7 @@ class KeybindDialog(Gtk.Dialog):
             grid.attach(l, 0, row, 1, 1)
 
         # Bind-Typ
-        _lbl("Bind-Typ", 0)
+        _lbl(t("Bind type"), 0)
         self._type_combo = Gtk.ComboBoxText()
         self._type_combo.set_hexpand(True)
         for bt, label in BIND_TYPE_LABELS.items():
@@ -193,7 +194,7 @@ class KeybindDialog(Gtk.Dialog):
         grid.attach(self._type_combo, 1, 0, 1, 1)
 
         # Modifier
-        _lbl("Modifier", 1)
+        _lbl(t("Modifier"), 1)
         self._mod_entry = Gtk.Entry()
         self._mod_entry.set_hexpand(True)
         self._mod_entry.set_placeholder_text("SUPER, CTRL SHIFT, $mainMod …")
@@ -209,7 +210,7 @@ class KeybindDialog(Gtk.Dialog):
         grid.attach(self._key_entry, 1, 2, 1, 1)
 
         # Dispatcher
-        _lbl("Dispatcher", 3)
+        _lbl(t("Dispatcher"), 3)
         self._disp_combo = Gtk.ComboBoxText()
         self._disp_combo.set_hexpand(True)
         for d in DISPATCHERS:
@@ -218,7 +219,7 @@ class KeybindDialog(Gtk.Dialog):
         grid.attach(self._disp_combo, 1, 3, 1, 1)
 
         # Argument
-        _lbl("Argument", 4)
+        _lbl(t("Argument"), 4)
         self._arg_entry = Gtk.Entry()
         self._arg_entry.set_hexpand(True)
         self._arg_entry.set_placeholder_text("optional — kitty, 1, toggle …")
@@ -226,7 +227,7 @@ class KeybindDialog(Gtk.Dialog):
         grid.attach(self._arg_entry, 1, 4, 1, 1)
 
         # Kommentar
-        _lbl("Kommentar", 5)
+        _lbl(t("Comment"), 5)
         self._comment_entry = Gtk.Entry()
         self._comment_entry.set_hexpand(True)
         self._comment_entry.set_placeholder_text("optional")
@@ -268,27 +269,27 @@ class KeybindsPage(Gtk.Box):
         bar.set_margin_start(12); bar.set_margin_end(12)
 
         self._search = Gtk.SearchEntry()
-        self._search.set_placeholder_text("Suche: SUPER, exec, kitty…")
+        self._search.set_placeholder_text(t("Search: SUPER, exec, kitty..."))
         self._search.set_hexpand(True)
         self._search.connect("search-changed", lambda _: self._filter())
         bar.append(self._search)
 
         self._type_filter = Gtk.ComboBoxText()
-        self._type_filter.append("", "Alle Typen")
+        self._type_filter.append("", t("All types"))
         for bt in BIND_TYPE_LABELS:
             self._type_filter.append(bt, bt)
         self._type_filter.set_active(0)
         self._type_filter.connect("changed", lambda _: self._filter())
         bar.append(self._type_filter)
 
-        add_btn = Gtk.Button(label="+ Neu")
+        add_btn = Gtk.Button(label=t("+ New"))
         add_btn.add_css_class("suggested-action")
         add_btn.connect("clicked", self._on_add)
         bar.append(add_btn)
 
         reload_btn = Gtk.Button()
         reload_btn.set_icon_name("view-refresh-symbolic")
-        reload_btn.set_tooltip_text("Neu laden")
+        reload_btn.set_tooltip_text(t("Reload"))
         reload_btn.connect("clicked", lambda _: self._load())
         bar.append(reload_btn)
 
@@ -323,9 +324,9 @@ class KeybindsPage(Gtk.Box):
 
         self._empty = Adw.StatusPage()
         self._empty.set_icon_name("preferences-desktop-keyboard-symbolic")
-        self._empty.set_title("Keine Keybinds gefunden")
+        self._empty.set_title(t("No keybinds found"))
         self._empty.set_description(
-            "Prüfe deine keybinds.conf oder füge eine neue Keybind hinzu."
+            t("Check your keybinds.conf or add a new keybind.")
         )
         self._empty.set_vexpand(True)
         self._empty.set_visible(False)
@@ -401,7 +402,7 @@ class KeybindsPage(Gtk.Box):
         del_btn.set_icon_name("user-trash-symbolic")
         del_btn.add_css_class("destructive-action")
         del_btn.set_valign(Gtk.Align.CENTER)
-        del_btn.set_tooltip_text("Löschen")
+        del_btn.set_tooltip_text(t("Delete"))
         del_btn.connect("clicked", lambda _, b=bind: self._on_delete(b))
         row.add_suffix(del_btn)
 
@@ -424,14 +425,14 @@ class KeybindsPage(Gtk.Box):
         data = dialog_obj.get_data()
         if not data["key"] or not data["dispatcher"]:
             self.main_window.add_toast(
-                Adw.Toast.new("Taste und Dispatcher sind erforderlich.")
+                Adw.Toast.new(t("Key and dispatcher are required."))
             )
             return
         try:
             save_keybind(data, line_number)
             self._load()
             self.main_window.add_toast(
-                Adw.Toast.new("Keybind gespeichert und Hyprland neu geladen.")
+                Adw.Toast.new(t("Keybind saved and Hyprland reloaded."))
             )
         except Exception as e:
             self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
@@ -440,12 +441,12 @@ class KeybindsPage(Gtk.Box):
         mod = bind["modifier_resolved"] or bind["modifier_raw"]
         key = bind["key_resolved"] or bind["key_raw"]
         dlg = Adw.MessageDialog(
-            heading="Keybind löschen?",
+            heading=t("Delete keybind?"),
             body=f"{mod} + {key} → {bind['dispatcher']} {bind['argument']}"
         )
         dlg.set_transient_for(self.main_window)
-        dlg.add_response("cancel", "Abbrechen")
-        dlg.add_response("delete", "Löschen")
+        dlg.add_response("cancel", t("Cancel"))
+        dlg.add_response("delete", t("Delete"))
         dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
 
         def on_resp(d, r):
@@ -453,7 +454,7 @@ class KeybindsPage(Gtk.Box):
                 try:
                     delete_keybind(bind["line_number"])
                     self._load()
-                    self.main_window.add_toast(Adw.Toast.new("Keybind gelöscht."))
+                    self.main_window.add_toast(Adw.Toast.new(t("Keybind deleted.")))
                 except Exception as e:
                     self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
 

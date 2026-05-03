@@ -1,20 +1,50 @@
 # Caelestia Settings
 
-> A native GTK4/Libadwaita settings app for [Caelestia](https://github.com/caelestia-dots/caelestia) Hyprland setups.
+> A native GTK4/Libadwaita control center for [Caelestia](https://github.com/caelestia-dots/caelestia) Hyprland setups.
 
-![Version](https://img.shields.io/badge/version-0.0.5-blue)
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![Platform](https://img.shields.io/badge/platform-Arch%20Linux-1793d1)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Language](https://img.shields.io/badge/i18n-EN%20%2F%20DE-orange)
 
 ---
 
 ## Features
 
+### 🖼️ Wallpaper
+- Image and video tabs — browse `~/Pictures/Wallpapers/` and `~/Videos/Wallpaper/`
+- Thumbnails generated via ffmpeg for videos, cached for fast reloads
+- Wallpaper folder dynamically read from `~/.config/caelestia/shell.json`
+- One-click random wallpaper via `caelestia wallpaper -r`
+- Light / Dark mode toggle (`caelestia scheme set -m light/dark`)
+- Desktop clock settings — toggle, position, scale and invert colors (written to `shell.json`)
+
 ### 🖥️ Monitor
-- Interactive drag-and-drop canvas — arrange monitors visually like in Windows/GNOME
+- Interactive drag-and-drop canvas — arrange monitors visually like Windows/GNOME
 - Per-monitor settings: resolution, refresh rate, rotation, bit depth (8/10-bit HDR), scale
 - Set primary monitor (`xrandr --primary` via `execs.conf`)
 - Toggle taskbar visibility per monitor (`shell.json: bar.persistent`)
+
+### 🗂️ Workspaces
+- Visual editor grouped by monitor (physical order from `hyprctl monitors`)
+- Add, remove and reorder workspaces
+- Set monitor assignment, default workspace (★) and persistent flag per workspace
+- Live apply via `hyprctl keyword workspace`
+
+### ⌨️ Keybinds
+- Full keybind editor — parser migrated from [HyprKeys](https://github.com/Jojo252511/hyprkeys)
+- `$variable` resolution (reads `variables.conf`)
+- Search and filter by bind type (`bind`, `binde`, `bindl` etc.)
+- Create, edit and delete keybinds with automatic backup before every change
+- Live reload via `hyprctl reload`
+
+### 🪟 Window Rules
+- App scanner — reads all `.desktop` files from system and user applications
+- Assign workspace per app (dynamically loaded from `monitors.conf`, including named special workspaces)
+- Set float behavior and match type (`class` or `initial_title`)
+- Handles Spotify Wayland and Chromium web apps automatically
+- Reads and displays existing `rules.conf` — manual rules are preserved, never duplicated
+- Conflict detection — warns before saving if the same class is assigned twice
 
 ### ⌨️ General
 - Keyboard layout selector — ~90 XKB layouts with live Hyprland apply
@@ -22,38 +52,33 @@
 - System language (via `localectl`, requires sudo)
 - Timezone (via `timedatectl`, requires sudo)
 
-### 🪟 Window Rules
-- App scanner — reads all `.desktop` files from `/usr/share/applications/` and `~/.local/share/applications/`
-- Assign workspace per app (dynamically loaded from your `monitors.conf`, including named special workspaces)
-- Set float behavior per app
-- `match:class` or `match:initial_title` — handles Spotify Wayland and Chromium web apps
-- Reads and displays existing `rules.conf` entries (manual rules are preserved, never duplicated)
-- Conflict detection — warns before saving if the same class is assigned twice
-
-### 🔊 Audio
-- Output device selector
-- Default volume control
-
 ### 📶 WLAN
 - Scan and connect to Wi-Fi networks
 - Password dialog for secured networks
 - Disconnect from active network
 
+### 🔊 Audio
+- Output device selector
+- Default volume control
+
 ### 🔄 Updates
 - In-app system update with live progress output — no terminal popup
-- Password dialog (sudo via `SUDO_ASKPASS`)
+- Sudo password dialog (via `SUDO_ASKPASS`)
 - Optional automatic reboot after update
+- swaync notification on completion
 - App self-update from GitHub
 
 ### ℹ️ About
 - App version from `manifest.json`
-- One-click app update
+- One-click app self-update
 
 ---
 
 ## Screenshots
 
-> *Coming soon*
+| Keybinds | Wallpaper | Monitor |
+|----------|-----------|---------|
+| ![Keybinds](https://raw.githubusercontent.com/Jojo252511/caelestia-settings/main/screenshots/keybinds.png) | ![Wallpaper](https://raw.githubusercontent.com/Jojo252511/caelestia-settings/main/screenshots/wallpaper.png) | ![Monitor](https://raw.githubusercontent.com/Jojo252511/caelestia-settings/main/screenshots/monitor.png) |
 
 ---
 
@@ -106,23 +131,25 @@ bind = SUPER, I, exec, caelestia-settings
 
 ```
 caelestia-settings/
-├── main.py                  # App entry point
-├── install.sh               # Installer
-├── app_update.sh            # Self-updater (called by the app)
-├── manifest.json            # Version info
+├── main.py                   # App entry point
+├── install.sh                # Installer
+├── app_update.sh             # Self-updater (called by the About page)
+├── manifest.json             # Version info
 └── src/
-    ├── config.py            # Paths and config helpers
-    ├── lang.py              # i18n (DE/EN)
-    ├── window.py            # Main window
+    ├── config.py             # Paths and config helpers
+    ├── lang.py               # i18n (EN / DE — auto-detected from system locale)
+    ├── window.py             # Main window
     └── pages/
-        ├── general.py       # Keyboard, language, timezone
-        ├── monitor.py       # Monitor canvas and settings
-        ├── audio.py         # Audio output
-        ├── wifi.py          # Wi-Fi
-        ├── window_rules.py  # App → workspace assignment
-        ├── updates.py       # System update UI
-        ├── keybinds.py      # Keybinds (coming in v0.0.6)
-        └── about.py         # About page
+        ├── general.py        # Keyboard layout, language, timezone
+        ├── wallpaper.py      # Wallpaper browser, video support, desktop clock
+        ├── monitor.py        # Monitor canvas and settings
+        ├── workspaces.py     # Workspace editor
+        ├── wifi.py           # Wi-Fi
+        ├── audio.py          # Audio output
+        ├── window_rules.py   # App → workspace / float assignment
+        ├── keybinds.py       # Keybind editor
+        ├── updates.py        # System update UI
+        └── about.py          # About page
 ```
 
 ---
@@ -132,25 +159,29 @@ caelestia-settings/
 | File | What changes |
 |------|-------------|
 | `~/.config/hypr/hyprland/input.conf` | Keyboard layout, NumLock |
-| `~/.config/hypr/hyprland/monitors.conf` | Monitor resolution, position, rotation, scale |
-| `~/.config/hypr/hyprland/rules.conf` | Window rules (managed block at bottom) |
+| `~/.config/hypr/hyprland/monitors.conf` | Monitor resolution, position, rotation, scale + workspace assignments |
+| `~/.config/hypr/hyprland/rules.conf` | Window rules (managed block, manual rules preserved) |
+| `~/.config/hypr/hyprland/keybinds.conf` | Keybinds (with automatic `.bak` before every change) |
 | `~/.config/hypr/hyprland/execs.conf` | Primary monitor (`xrandr --primary`) |
-| `~/.config/caelestia/monitors/<name>/shell.json` | Taskbar visibility |
-| `~/.config/caelestia-settings/monitors.json` | Monitor settings cache |
+| `~/.config/caelestia/shell.json` | Desktop clock settings, taskbar visibility |
 | `~/.config/caelestia-settings/window_rules.json` | Window rules cache |
 
 ---
 
-## Roadmap
+## Language Support
 
-- [x] Monitor canvas with drag-and-drop
-- [x] Window rules app scanner
-- [x] In-app update UI
-- [x] Full keyboard layout dropdown
-- [ ] Keybinds editor (v0.0.6)
-- [ ] Workspace editor
-- [ ] English language support
-- [ ] Theming / accent color sync with Caelestia
+The app automatically detects your system language:
+
+| Language | Detection |
+|----------|-----------|
+| 🇬🇧 English | Default |
+| 🇩🇪 German | `LANG=de_*` |
+
+To override, edit `src/lang.py`:
+```python
+IS_GERMAN = True   # force German
+IS_GERMAN = False  # force English
+```
 
 ---
 
@@ -163,11 +194,28 @@ caelestia-settings/
 - `python-gobject`, `libadwaita`, `pamixer`, `git`
 - `yay` (for system updates)
 - `nmcli` (for Wi-Fi)
+- `ffmpeg` (for video wallpaper thumbnails, optional)
+- `mpvpaper` (for video wallpapers, optional — `yay -S mpvpaper`)
+
+---
+
+## Roadmap
+
+- [x] Monitor canvas with drag-and-drop
+- [x] Workspace editor
+- [x] Keybind editor
+- [x] Window rules app scanner
+- [x] Wallpaper browser with video support
+- [x] Desktop clock settings
+- [x] In-app update UI
+- [x] English / German language support
+- [ ] Theming / accent color sync with Caelestia
+- [ ] Keybind key-grabber (record shortcuts by pressing keys)
 
 ---
 
 ## Author
 
-**Jojo252511** — [GitHub](https://github.com/Jojo252511)
+**Jojo252511** — [GitHub](https://github.com/Jojo252511) — [Ko-fi](https://ko-fi.com/jojo2511)
 
-Made for the [Caelestia](https://github.com/caelestia-dots/caelestia) ecosystem.
+Part of the [Caelestia](https://github.com/caelestia-dots/caelestia) ecosystem.
