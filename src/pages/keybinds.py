@@ -93,6 +93,7 @@ def parse_keybinds() -> list[dict]:
             binds.append({
                 "id":                f"bind_{i}",
                 "line_number":       i,
+                "raw_line":          line,
                 "bind_type":         btype.lower(),
                 "modifier_raw":      mod_raw,
                 "modifier_resolved": _resolve(mod_raw, variables),
@@ -123,15 +124,31 @@ def _build_line(data: dict) -> str:
     return line
 
 
-def save_keybind(data: dict, line_number: int | None = None):
+def _find_line(lines: list[str], line_number: int, raw_line: str | None) -> int | None:
+    """Returns the actual index for the line, re-searching by content if the file changed."""
+    if raw_line is not None:
+        if 0 <= line_number < len(lines) and lines[line_number].strip() == raw_line.strip():
+            return line_number
+        for i, line in enumerate(lines):
+            if line.strip() == raw_line.strip():
+                return i
+        return None
+    return line_number if 0 <= line_number < len(lines) else None
+
+
+def save_keybind(data: dict, line_number: int | None = None, raw_line: str | None = None):
     _backup()
     KEYBINDS_CONF.parent.mkdir(parents=True, exist_ok=True)
     if not KEYBINDS_CONF.exists():
         KEYBINDS_CONF.touch()
     new_line = _build_line(data)
     lines = KEYBINDS_CONF.read_text().splitlines()
-    if line_number is not None and 0 <= line_number < len(lines):
-        lines[line_number] = new_line
+    if line_number is not None:
+        idx = _find_line(lines, line_number, raw_line)
+        if idx is not None:
+            lines[idx] = new_line
+        else:
+            lines.append(new_line)
     else:
         lines.append(new_line)
     KEYBINDS_CONF.write_text("\n".join(lines) + "\n")
@@ -141,11 +158,12 @@ def save_keybind(data: dict, line_number: int | None = None):
         pass
 
 
-def delete_keybind(line_number: int):
+def delete_keybind(line_number: int, raw_line: str | None = None):
     _backup()
     lines = KEYBINDS_CONF.read_text().splitlines()
-    if 0 <= line_number < len(lines):
-        lines.pop(line_number)
+    idx = _find_line(lines, line_number, raw_line)
+    if idx is not None:
+        lines.pop(idx)
         KEYBINDS_CONF.write_text("\n".join(lines) + "\n")
     try:
         subprocess.run(["hyprctl", "reload"], capture_output=True, timeout=3)
@@ -410,15 +428,15 @@ class KeybindsPage(Gtk.Box):
 
     def _on_add(self, _btn):
         dlg = KeybindDialog(self.main_window)
-        dlg.connect("response", self._on_dialog_response, dlg, None)
+        dlg.connect("response", self._on_dialog_response, dlg, None, None)
         dlg.present()
 
     def _on_edit(self, bind: dict):
         dlg = KeybindDialog(self.main_window, bind)
-        dlg.connect("response", self._on_dialog_response, dlg, bind["line_number"])
+        dlg.connect("response", self._on_dialog_response, dlg, bind["line_number"], bind.get("raw_line"))
         dlg.present()
 
-    def _on_dialog_response(self, dlg, response, dialog_obj, line_number):
+    def _on_dialog_response(self, dlg, response, dialog_obj, line_number, raw_line):
         dlg.destroy()
         if response != Gtk.ResponseType.OK:
             return
@@ -429,7 +447,7 @@ class KeybindsPage(Gtk.Box):
             )
             return
         try:
-            save_keybind(data, line_number)
+            save_keybind(data, line_number, raw_line)
             self._load()
             self.main_window.add_toast(
                 Adw.Toast.new(t("Keybind saved and Hyprland reloaded."))
@@ -452,7 +470,7 @@ class KeybindsPage(Gtk.Box):
         def on_resp(d, r):
             if r == "delete":
                 try:
-                    delete_keybind(bind["line_number"])
+                    delete_keybind(bind["line_number"], bind.get("raw_line"))
                     self._load()
                     self.main_window.add_toast(Adw.Toast.new(t("Keybind deleted.")))
                 except Exception as e:

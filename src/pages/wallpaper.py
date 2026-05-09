@@ -13,8 +13,9 @@ VIDEO_DIR = Path.home() / "Videos" / "Wallpaper"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 
-THUMB_SIZE  = 160
-THUMB_CACHE = Path.home() / ".cache" / "caelestia-settings" / "thumbs"
+THUMB_SIZE    = 160
+THUMB_CACHE   = Path.home() / ".cache" / "caelestia-settings" / "thumbs"
+_MPV_PID_FILE = Path.home() / ".cache" / "caelestia-settings" / "mpvpaper.pid"
 
 
 def _get_image_dir() -> Path:
@@ -494,6 +495,11 @@ class WallpaperPage(Gtk.Box):
                 "mpvpaper", "*", str(path),
                 "-o", "loop --no-audio --panscan=1.0"
             ])
+            try:
+                _MPV_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+                _MPV_PID_FILE.write_text(str(self._mpv_proc.pid))
+            except Exception:
+                pass
             self._current = str(path)
             self._vid_grid.mark_current(self._current)
             self._show_banner(f"Video-Wallpaper: {path.name}")
@@ -506,10 +512,22 @@ class WallpaperPage(Gtk.Box):
             self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
 
     def _stop_mpv(self):
-        if self._mpv_proc and self._mpv_proc.poll() is None:
-            self._mpv_proc.terminate()
+        if self._mpv_proc is not None:
+            if self._mpv_proc.poll() is None:
+                self._mpv_proc.terminate()
             self._mpv_proc = None
-        subprocess.run(["pkill", "-x", "mpvpaper"], capture_output=True)
+        else:
+            # Kein laufender Prozess verfolgt — PID aus vorheriger Sitzung prüfen
+            try:
+                if _MPV_PID_FILE.exists():
+                    pid = int(_MPV_PID_FILE.read_text().strip())
+                    os.kill(pid, 15)  # SIGTERM
+            except Exception:
+                pass
+        try:
+            _MPV_PID_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     # ── Toolbar-Buttons ───────────────────────────────────────────────────
 

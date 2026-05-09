@@ -1,3 +1,7 @@
 .venv/
 __pycache__/
 ./Update.sh
+.claude/
+.claude-flow/
+CLAUDE.md
+.mcp.json
