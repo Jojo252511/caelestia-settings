@@ -28,7 +28,7 @@ echo
 echo ">>> STEP 1: Installing system dependencies..."
 echo "The script requires 'python-gobject', 'libadwaita', 'pamixer' and 'git'."
 echo "Please enter your sudo password:"
-sudo pacman -S --needed --noconfirm python-gobject libadwaita pamixer git
+sudo pacman -S --needed --noconfirm python-gobject libadwaita pamixer git python-psutil
 echo "--- Dependencies installed."
 echo
 
