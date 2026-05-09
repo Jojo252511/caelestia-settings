@@ -2,7 +2,7 @@
 
 > A native GTK4/Libadwaita control center for [Caelestia](https://github.com/caelestia-dots/caelestia) Hyprland setups.
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.0-blue)
 ![Platform](https://img.shields.io/badge/platform-Arch%20Linux-1793d1)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Language](https://img.shields.io/badge/i18n-EN%20%2F%20DE-orange)
@@ -11,7 +11,7 @@
 
 ## Features
 
-### 🖼️ Wallpaper
+### Wallpaper
 - Image and video tabs — browse `~/Pictures/Wallpapers/` and `~/Videos/Wallpaper/`
 - Thumbnails generated via ffmpeg for videos, cached for fast reloads
 - Wallpaper folder dynamically read from `~/.config/caelestia/shell.json`
@@ -19,26 +19,26 @@
 - Light / Dark mode toggle (`caelestia scheme set -m light/dark`)
 - Desktop clock settings — toggle, position, scale and invert colors (written to `shell.json`)
 
-### 🖥️ Monitor
+### Monitor
 - Interactive drag-and-drop canvas — arrange monitors visually like Windows/GNOME
 - Per-monitor settings: resolution, refresh rate, rotation, bit depth (8/10-bit HDR), scale
 - Set primary monitor (`xrandr --primary` via `execs.conf`)
 - Toggle taskbar visibility per monitor (`shell.json: bar.persistent`)
 
-### 🗂️ Workspaces
+### Workspaces
 - Visual editor grouped by monitor (physical order from `hyprctl monitors`)
 - Add, remove and reorder workspaces
 - Set monitor assignment, default workspace (★) and persistent flag per workspace
 - Live apply via `hyprctl keyword workspace`
 
-### ⌨️ Keybinds
+### Keybinds
 - Full keybind editor — parser migrated from [HyprKeys](https://github.com/Jojo252511/hyprkeys)
 - `$variable` resolution (reads `variables.conf`)
 - Search and filter by bind type (`bind`, `binde`, `bindl` etc.)
 - Create, edit and delete keybinds with automatic backup before every change
 - Live reload via `hyprctl reload`
 
-### 🪟 Window Rules
+### Window Rules
 - App scanner — reads all `.desktop` files from system and user applications
 - Assign workspace per app (dynamically loaded from `monitors.conf`, including named special workspaces)
 - Set float behavior and match type (`class` or `initial_title`)
@@ -46,29 +46,35 @@
 - Reads and displays existing `rules.conf` — manual rules are preserved, never duplicated
 - Conflict detection — warns before saving if the same class is assigned twice
 
-### ⌨️ General
+### General
 - Keyboard layout selector — ~90 XKB layouts with live Hyprland apply
 - NumLock on startup toggle
 - System language (via `localectl`, requires sudo)
 - Timezone (via `timedatectl`, requires sudo)
 
-### 📶 WLAN
+### WLAN
 - Scan and connect to Wi-Fi networks
 - Password dialog for secured networks
 - Disconnect from active network
 
-### 🔊 Audio
+### Audio
 - Output device selector
 - Default volume control
 
-### 🔄 Updates
+### Updates
 - In-app system update with live progress output — no terminal popup
 - Sudo password dialog (via `SUDO_ASKPASS`)
 - Optional automatic reboot after update
 - swaync notification on completion
 - App self-update from GitHub
 
-### ℹ️ About
+### Fans
+- CPU and GPU temperature readout (via psutil / NVML), updated every 2 seconds
+- GPU fan control: manual slider, presets (25 / 50 / 75 / 100 %), auto curve (temp-based)
+- System fan PWM control via hwmon — writes directly or via sudo password dialog
+- Graceful fallback when psutil or pynvml are not installed
+
+### About
 - App version from `manifest.json`
 - One-click app self-update
 
@@ -87,7 +93,7 @@
 ### Dependencies
 
 ```bash
-sudo pacman -S --needed python-gobject libadwaita pamixer git
+sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil
 ```
 
 ### Install
@@ -149,6 +155,7 @@ caelestia-settings/
         ├── window_rules.py   # App → workspace / float assignment
         ├── keybinds.py       # Keybind editor
         ├── updates.py        # System update UI
+        ├── fans.py           # Fan & temperature monitoring and control
         └── about.py          # About page
 ```
 
@@ -191,7 +198,8 @@ IS_GERMAN = False  # force English
 - Hyprland
 - [Caelestia](https://github.com/caelestia-dots/caelestia) rice
 - Python 3.11+
-- `python-gobject`, `libadwaita`, `pamixer`, `git`
+- `python-gobject`, `libadwaita`, `pamixer`, `git`, `python-psutil`
+- `python-nvidia-ml-py` (optional — for GPU fan control: `yay -S python-nvidia-ml-py`)
 - `yay` (for system updates)
 - `nmcli` (for Wi-Fi)
 - `ffmpeg` (for video wallpaper thumbnails, optional)
@@ -209,6 +217,7 @@ IS_GERMAN = False  # force English
 - [x] Desktop clock settings
 - [x] In-app update UI
 - [x] English / German language support
+- [x] Fan & temperature monitoring with GPU fan control
 - [ ] Theming / accent color sync with Caelestia
 - [ ] Keybind key-grabber (record shortcuts by pressing keys)
 
