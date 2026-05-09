@@ -1,5 +1,6 @@
 import os
 import subprocess
+import tempfile
 import threading
 from gi.repository import Gtk, Adw, GLib
 from src.lang import t
@@ -15,31 +16,16 @@ UPDATE_STEPS = [
 
 UPDATE_SCRIPT = """#!/usr/bin/env bash
 set -e
-# Passwort von stdin lesen
+# Passwort von stdin lesen und direkt per Pipe an sudo übergeben — kein Tempfile
 read -r SUDO_PASSWD
-
-# Temporäres askpass-Skript erstellen das das Passwort ausgibt
-ASKPASS_SCRIPT=$(mktemp /tmp/caelestia-askpass.XXXXXX)
-chmod 700 "$ASKPASS_SCRIPT"
-cat > "$ASKPASS_SCRIPT" << ASKEOF
-#!/bin/bash
-echo "$SUDO_PASSWD"
-ASKEOF
-
-# SUDO_ASKPASS setzen — alle sudo-Aufrufe (auch von yay) nutzen dieses Skript
-export SUDO_ASKPASS="$ASKPASS_SCRIPT"
+echo "$SUDO_PASSWD" | sudo -S -v 2>/dev/null
 unset SUDO_PASSWD
-
-# Cache vorab füllen
-sudo --askpass -v 2>/dev/null
 
 echo "::step:: System-Pakete aktualisieren…"
 yay -Syu --needed hyprlock swww --noconfirm
 echo "::step:: Audio-Dienste neu starten…"
 systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service
 
-# Aufräumen
-rm -f "$ASKPASS_SCRIPT"
 echo "::done::"
 if [[ "$1" == "-r" ]]; then
     echo "::step:: Neustart wird vorbereitet…"
@@ -215,19 +201,19 @@ class UpdatePage(Gtk.Box):
         self.step_label.set_text(t("Starting update..."))
         self.progress_bar.set_fraction(0.0)
 
-        # Skript in tmp schreiben
-        script_path = "/tmp/caelestia_update.sh"
-        with open(script_path, "w") as f:
+        # Skript in user-only tempfile schreiben
+        fd, script_path = tempfile.mkstemp(suffix=".sh")
+        with os.fdopen(fd, "w") as f:
             f.write(UPDATE_SCRIPT)
-        os.chmod(script_path, 0o755)
+        os.chmod(script_path, 0o700)
 
         args = [script_path]
         if self.reboot_row.get_active():
             args.append("-r")
 
-        threading.Thread(target=self._run_update, args=(args, password), daemon=True).start()
+        threading.Thread(target=self._run_update, args=(args, password, script_path), daemon=True).start()
 
-    def _run_update(self, args: list[str], password: str):
+    def _run_update(self, args: list[str], password: str, script_path: str | None = None):
         try:
             self._process = subprocess.Popen(
                 args,
@@ -280,6 +266,12 @@ class UpdatePage(Gtk.Box):
 
         except Exception as e:
             GLib.idle_add(self._on_finished, False, f"Fehler: {e}")
+        finally:
+            if script_path:
+                try:
+                    os.unlink(script_path)
+                except Exception:
+                    pass
 
     # ── UI-Updates aus Thread (immer via idle_add) ────────────────────────
 

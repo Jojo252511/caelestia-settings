@@ -50,9 +50,10 @@ class WifiPage(Gtk.Box):
 
     def check_wifi_adapter(self):
         try:
-            res = subprocess.run("nmcli device | grep wifi", shell=True, capture_output=True)
-            return res.returncode == 0
-        except: return False
+            res = subprocess.run(["nmcli", "device"], capture_output=True, text=True, timeout=5)
+            return "wifi" in res.stdout
+        except Exception:
+            return False
 
     def on_scan_clicked(self, btn):
         self.scan_networks()
