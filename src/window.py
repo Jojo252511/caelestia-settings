@@ -7,6 +7,7 @@ from src.pages.audio import AudioPage
 from src.pages.wifi import WifiPage
 from src.pages.updates import UpdatePage
 from src.pages.about import AboutPage
+from src.pages.fans import FansPage
 from src.pages.window_rules import WindowRulesPage
 from src.pages.keybinds import KeybindsPage
 from src.pages.wallpaper import WallpaperPage
@@ -63,6 +64,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack.add_titled(AudioPage(self),         "audio",   t("Audio"))
         self.stack.add_titled(WindowRulesPage(self),   "rules",   "Window Rules")
         self.stack.add_titled(KeybindsPage(self),      "keys",    "Keybinds")
+        self.stack.add_titled(FansPage(self),          "fans",    t("Fans"))
         self.stack.add_titled(UpdatePage(self),        "upd",     t("Updates"))
         self.stack.add_titled(self.about_page,         "about",   t("About"))
         # ───────────────────────────────────────────────────────────────────
