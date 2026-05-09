@@ -170,6 +170,20 @@ TRANSLATIONS = {
 
     "Conflicts detected": "Konflikte erkannt",
 
+    # ── Fans ──────────────────────────────────────────────────────────────
+    "Fans": "Lüfter",
+    "Fan": "Lüfter",
+    "Fan & Temperature": "Lüfter & Temperaturen",
+    "GPU Fan Control": "GPU-Lüftersteuerung",
+    "System Fan Control": "System-Lüftersteuerung",
+    "Auto Fan Curve": "Automatische Lüfterkurve",
+    "Fan Speed": "Lüftergeschwindigkeit",
+    "Presets": "Voreinstellungen",
+    "Fan settings applied.": "Lüftereinstellungen angewendet.",
+    "Enter your sudo password to write fan settings.": "Bitte gib dein sudo-Passwort ein, um die Lüftereinstellungen zu schreiben.",
+    "GPU fan: enable Coolbits — sudo nvidia-xconfig --cool-bits=4": "GPU-Lüfter: Coolbits aktivieren — sudo nvidia-xconfig --cool-bits=4",
+    "GPU fan: manual control not supported (Zero-RPM mode?)": "GPU-Lüfter: Manuelle Steuerung nicht unterstützt (Zero-RPM aktiv?)",
+
     # ── About ─────────────────────────────────────────────────────────────
     "About": "Über",
     "Version": "Version",
