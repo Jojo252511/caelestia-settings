@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import subprocess
 import threading
 from pathlib import Path
@@ -16,6 +17,8 @@ VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 THUMB_SIZE    = 160
 THUMB_CACHE   = Path.home() / ".cache" / "caelestia-settings" / "thumbs"
 _MPV_PID_FILE = Path.home() / ".cache" / "caelestia-settings" / "mpvpaper.pid"
+_EXECS_CONF   = Path.home() / ".config" / "hypr" / "hyprland" / "execs.conf"
+_MPVPAPER_MARKER = "# caelestia-settings: video-wallpaper"
 
 
 def _get_image_dir() -> Path:
@@ -37,6 +40,18 @@ def _ensure_dirs():
     _get_image_dir().mkdir(parents=True, exist_ok=True)
     VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     THUMB_CACHE.mkdir(parents=True, exist_ok=True)
+
+
+def _write_mpvpaper_autostart(video_path: Path | None):
+    _EXECS_CONF.parent.mkdir(parents=True, exist_ok=True)
+    lines = _EXECS_CONF.read_text().splitlines() if _EXECS_CONF.exists() else []
+    lines = [l for l in lines if _MPVPAPER_MARKER not in l]
+    if video_path is not None:
+        lines.append(
+            f"exec-once = mpvpaper '*' {shlex.quote(str(video_path))}"
+            f" -o 'loop --no-audio --panscan=1.0'  {_MPVPAPER_MARKER}"
+        )
+    _EXECS_CONF.write_text("\n".join(lines) + "\n")
 
 
 def _get_current_wallpaper() -> str:
@@ -481,6 +496,7 @@ class WallpaperPage(Gtk.Box):
         self._stop_mpv()
         try:
             subprocess.Popen(["caelestia", "wallpaper", "-f", str(path)])
+            _write_mpvpaper_autostart(None)
             self._current = str(path)
             self._img_grid.mark_current(self._current)
             self._show_banner(f"Wallpaper: {path.name}")
@@ -500,6 +516,7 @@ class WallpaperPage(Gtk.Box):
                 _MPV_PID_FILE.write_text(str(self._mpv_proc.pid))
             except Exception:
                 pass
+            _write_mpvpaper_autostart(path)
             self._current = str(path)
             self._vid_grid.mark_current(self._current)
             self._show_banner(f"Video-Wallpaper: {path.name}")
@@ -535,6 +552,7 @@ class WallpaperPage(Gtk.Box):
         self._stop_mpv()
         try:
             subprocess.Popen(["caelestia", "wallpaper", "-r", str(_get_image_dir())])
+            _write_mpvpaper_autostart(None)
             self._show_banner(t("Random wallpaper set"))
             self.main_window.add_toast(Adw.Toast.new(t("Random wallpaper set")))
         except Exception as e:
