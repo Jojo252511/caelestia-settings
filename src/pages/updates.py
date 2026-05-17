@@ -16,10 +16,24 @@ UPDATE_STEPS = [
 
 UPDATE_SCRIPT = """#!/usr/bin/env bash
 set -e
-# Passwort von stdin lesen und direkt per Pipe an sudo übergeben — kein Tempfile
+
 read -r SUDO_PASSWD
-echo "$SUDO_PASSWD" | sudo -S -v 2>/dev/null
+
+# SUDO_ASKPASS helper so yay's internal sudo calls work without a TTY.
+_ASKPASS=$(mktemp --suffix=.sh)
+chmod 700 "$_ASKPASS"
+cat > "$_ASKPASS" << 'ASKPASS_EOF'
+#!/bin/sh
+printf '%s\\n' "$_SUDO_PASS"
+ASKPASS_EOF
+
+export _SUDO_PASS="$SUDO_PASSWD"
+export SUDO_ASKPASS="$_ASKPASS"
 unset SUDO_PASSWD
+
+trap 'rm -f "$_ASKPASS"; unset _SUDO_PASS SUDO_ASKPASS' EXIT
+
+sudo -A -v
 
 echo "::step:: System-Pakete aktualisieren…"
 yay -Syu --needed hyprlock swww --noconfirm
@@ -30,7 +44,7 @@ echo "::done::"
 if [[ "$1" == "-r" ]]; then
     echo "::step:: Neustart wird vorbereitet…"
     sleep 5
-    sudo reboot
+    sudo -A reboot
 fi
 """
 
