@@ -241,7 +241,7 @@ class WindowRulesPage(Gtk.Box):
             seen[wm] = ws
         self._conflicts = conflicts
         if conflicts:
-            self.conflict_banner.set_title(f"{len(conflicts)} {t("conflicts detected")}")
+            self.conflict_banner.set_title(f"{len(conflicts)} {t('conflicts detected')}")
             self.conflict_banner.set_revealed(True)
         else:
             self.conflict_banner.set_revealed(False)

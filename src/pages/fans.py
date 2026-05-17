@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -351,7 +352,10 @@ class FansPage(Gtk.Box):
         dialog.add_response("ok", t("Apply"))
         dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("ok")
-        pwd_entry.connect("activate", lambda _: dialog.response("ok"))
+        def _on_entry_activate(_entry):
+            dialog.response("ok")
+            dialog.close()
+        pwd_entry.connect("activate", _on_entry_activate)
 
         def on_resp(dlg, r):
             if r != "ok":
@@ -373,18 +377,33 @@ class FansPage(Gtk.Box):
         pwd_entry.grab_focus()
 
     def _write_with_sudo(self, values: list, password: str):
-        lines = [
-            "#!/usr/bin/env bash", "set -e",
-            "read -r SUDO_PASSWD",
-            "echo \"$SUDO_PASSWD\" | sudo -S -v 2>/dev/null",
-            "unset SUDO_PASSWD",
-        ]
+        tee_lines = []
         for enable, pwm, pct in values:
             pwm_val = int(pct / 100 * 255)
             if enable.exists():
-                lines.append(f"echo 1 | sudo tee \"{enable}\" > /dev/null")
-            lines.append(f"echo {pwm_val} | sudo tee \"{pwm}\" > /dev/null")
-        script = "\n".join(lines) + "\n"
+                tee_lines.append(
+                    f"printf '1\\n' | sudo -A tee {shlex.quote(str(enable))} > /dev/null"
+                )
+            tee_lines.append(
+                f"printf '%d\\n' {pwm_val} | sudo -A tee {shlex.quote(str(pwm))} > /dev/null"
+            )
+
+        script = (
+            "#!/usr/bin/env bash\n"
+            "set -e\n\n"
+            "read -r SUDO_PASSWD\n\n"
+            "_ASKPASS=$(mktemp --suffix=.sh)\n"
+            "chmod 700 \"$_ASKPASS\"\n"
+            "cat > \"$_ASKPASS\" << 'ASKPASS_EOF'\n"
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$_SUDO_PASS\"\n"
+            "ASKPASS_EOF\n\n"
+            "export _SUDO_PASS=\"$SUDO_PASSWD\"\n"
+            "export SUDO_ASKPASS=\"$_ASKPASS\"\n"
+            "unset SUDO_PASSWD\n\n"
+            "trap 'rm -f \"$_ASKPASS\"; unset _SUDO_PASS SUDO_ASKPASS' EXIT\n\n"
+            "sudo -A -v\n\n"
+        ) + "\n".join(tee_lines) + "\n"
 
         fd, path = tempfile.mkstemp(suffix=".sh")
         try:
