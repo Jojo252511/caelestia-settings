@@ -1,6 +1,8 @@
-import subprocess
-from gi.repository import Gtk, Adw
-from src.config import APP_DATA_DIR
+import json
+import threading
+import urllib.error
+import urllib.request
+from gi.repository import Gtk, Adw, GLib
 from src.pages.general import GeneralPage
 from src.pages.monitor import MonitorPage
 from src.pages.audio import AudioPage
@@ -13,6 +15,24 @@ from src.pages.keybinds import KeybindsPage
 from src.pages.wallpaper import WallpaperPage
 from src.pages.workspaces import WorkspacesPage
 from src.lang import t
+
+# Source of truth for "is a newer version out": the manifest.json committed
+# on main (the prod branch, see branching policy — dev is pre-release).
+MANIFEST_URL = "https://raw.githubusercontent.com/Jojo252511/caelestia-settings/main/manifest.json"
+
+
+def _parse_version(version: str) -> tuple:
+    """Turns "1.2.10" into (1, 2, 10) for numeric comparison.
+
+    Plain string comparison would rank "1.10.0" below "1.9.0". Returns an
+    empty tuple for anything that isn't dot-separated integers, which always
+    compares as "not newer" against a real version.
+    """
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except (ValueError, AttributeError):
+        return ()
+
 
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, *args, **kwargs):
@@ -69,21 +89,24 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack.add_titled(self.about_page,         "about",   t("About"))
         # ───────────────────────────────────────────────────────────────────
 
-        self.stack.connect("notify::visible-child", self.on_page_change)
+        threading.Thread(target=self._check_for_update, daemon=True).start()
 
     def add_toast(self, toast):
         self.toast_overlay.add_toast(toast)
 
-    def on_page_change(self, stack, _):
-        child = stack.get_visible_child()
-        self.update_btn.set_visible(child == self.about_page)
+    def _check_for_update(self):
+        try:
+            with urllib.request.urlopen(MANIFEST_URL, timeout=5) as resp:
+                remote_manifest = json.loads(resp.read().decode())
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            return  # No network, GitHub unreachable, etc. — check silently fails.
+
+        remote_version = _parse_version(remote_manifest.get("version", ""))
+        local_version = _parse_version(self.about_page.local_version)
+        if remote_version > local_version:
+            GLib.idle_add(self.update_btn.set_visible, True)
 
     def on_update_app(self, btn):
-        script = APP_DATA_DIR / "app_update.sh"
-        if script.exists():
-            try:
-                subprocess.Popen(["kitty", str(script)])
-            except Exception as e:
-                print(f"Err: {e}")
-        else:
-            print("Update-Skript nicht gefunden.")
+        # The header button is just a shortcut to the same update flow the
+        # About page offers — no separate implementation to keep in sync.
+        self.about_page.on_update_clicked(btn)
