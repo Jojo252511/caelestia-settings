@@ -4,7 +4,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from src.lang import t
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw
 
 KEYBINDS_CONF = Path.home() / ".config/hypr/hyprland/keybinds.conf"
 VARIABLES_CONF = Path.home() / ".config/hypr/variables.conf"
@@ -197,10 +197,10 @@ class KeybindDialog(Gtk.Dialog):
         grid.set_margin_start(16); grid.set_margin_end(16)
 
         def _lbl(text, row):
-            l = Gtk.Label(label=text)
-            l.set_halign(Gtk.Align.END)
-            l.add_css_class("dim-label")
-            grid.attach(l, 0, row, 1, 1)
+            lbl = Gtk.Label(label=text)
+            lbl.set_halign(Gtk.Align.END)
+            lbl.add_css_class("dim-label")
+            grid.attach(lbl, 0, row, 1, 1)
 
         # Bind-Typ
         _lbl(t("Bind type"), 0)

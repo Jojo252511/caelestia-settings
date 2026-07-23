@@ -1,9 +1,8 @@
 import json
-import math
 import subprocess
 import cairo
 from src.lang import t
-from gi.repository import Gtk, Adw, Gdk, GLib
+from gi.repository import Gtk, Adw, GLib
 
 # ── Konstanten ────────────────────────────────────────────────────────────────
 

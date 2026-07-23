@@ -245,7 +245,6 @@ class UpdatePage(Gtk.Box):
 
             step_count = 0
             total_steps = UPDATE_SCRIPT.count("::step::")
-            success = False
 
             for line in self._process.stdout:
                 line = line.rstrip()
@@ -255,7 +254,6 @@ class UpdatePage(Gtk.Box):
                     fraction = min(step_count / max(total_steps, 1), 0.95)
                     GLib.idle_add(self._update_step, msg, fraction)
                 elif line == "::done::":
-                    success = True
                     GLib.idle_add(self._update_step, "Fertig!", 1.0)
                 else:
                     GLib.idle_add(self._append_log, line)

@@ -2,7 +2,7 @@
 
 > A native GTK4/Libadwaita control center for [Caelestia](https://github.com/caelestia-dots/caelestia) Hyprland setups.
 
-![Version](https://img.shields.io/badge/version-1.2.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.1-blue)
 ![Platform](https://img.shields.io/badge/platform-Arch%20Linux-1793d1)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Language](https://img.shields.io/badge/i18n-EN%20%2F%20DE-orange)
@@ -24,6 +24,7 @@
 - Per-monitor settings: resolution, refresh rate, rotation, bit depth (8/10-bit HDR), scale
 - Set primary monitor (`xrandr --primary` via `execs.conf`)
 - Toggle taskbar visibility per monitor (`shell.json: bar.persistent`)
+- Rust-based parser for `monitors.conf` and `workspaces.conf` (in development)
 
 ### Workspaces
 - Visual editor grouped by monitor (physical order from `hyprctl monitors`)
@@ -37,6 +38,7 @@
 - Search and filter by bind type (`bind`, `binde`, `bindl` etc.)
 - Create, edit and delete keybinds with automatic backup before every change
 - Live reload via `hyprctl reload`
+- Rust-based parser for `keybinds.conf` and `variables.conf` (in development)
 
 ### Window Rules
 - App scanner — reads all `.desktop` files from system and user applications
@@ -45,6 +47,7 @@
 - Handles Spotify Wayland and Chromium web apps automatically
 - Reads and displays existing `rules.conf` — manual rules are preserved, never duplicated
 - Conflict detection — warns before saving if the same class is assigned twice
+- Rust-based parser for `rules.conf` (in development) for improved performance and reliability
 
 ### General
 - Keyboard layout selector — ~90 XKB layouts with live Hyprland apply
@@ -92,8 +95,15 @@
 
 ### Dependencies
 
+For the Python application:
 ```bash
 sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil
+```
+
+For Rust module development (optional):
+```bash
+sudo pacman -S --needed rust
+rustup component add clippy rust-analyzer
 ```
 
 ### Install
@@ -141,6 +151,16 @@ caelestia-settings/
 ├── install.sh                # Installer
 ├── app_update.sh             # Self-updater (called by the About page)
 ├── manifest.json             # Version info
+├── ruff.toml                 # Python linter configuration
+├── rust/                     # Rust workspace for parser modules
+│   ├── Cargo.toml            # Rust workspace root
+│   └── caelestia-core/       # Core parser modules
+│       ├── Cargo.toml        # Package configuration
+│       └── src/
+│           ├── lib.rs        # Module exports
+│           ├── config.rs     # monitors.conf and workspaces.conf parsing
+│           ├── keybinds.rs    # keybinds.conf and variables.conf parsing
+│           └── rules.rs       # rules.conf windowrule parsing
 └── src/
     ├── config.py             # Paths and config helpers
     ├── lang.py               # i18n (EN / DE — auto-detected from system locale)
@@ -181,8 +201,8 @@ The app automatically detects your system language:
 
 | Language | Detection |
 |----------|-----------|
-| 🇬🇧 English | Default |
-| 🇩🇪 German | `LANG=de_*` |
+| English | Default |
+| German | `LANG=de_*` |
 
 To override, edit `src/lang.py`:
 ```python
@@ -192,20 +212,38 @@ IS_GERMAN = False  # force English
 
 ---
 
+## CI/CD
+
+Automated testing and linting via GitHub Actions workflow (`.github/workflows/ci.yml`):
+
+- **Python**: `ruff check` for linting (targets Python 3.12)
+- **Rust**: `cargo fmt --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`
+- **Security**: `gitleaks` for secret scanning
+
+Triggers on push and pull request to `main` and `dev` branches.
+
+---
+
 ## Requirements
 
 - Arch Linux (or Arch-based distro)
 - Hyprland
 - [Caelestia](https://github.com/caelestia-dots/caelestia) rice
-- Python 3.11+
+- Python 3.12+
 - `python-gobject`, `libadwaita`, `pamixer`, `git`, `python-psutil`
 - `python-nvidia-ml-py` (optional — for GPU fan control: `yay -S python-nvidia-ml-py`)
 - `yay` (for system updates)
 - `nmcli` (for Wi-Fi)
 - `ffmpeg` (for video wallpaper thumbnails, optional)
 - `mpvpaper` (for video wallpapers, optional — `yay -S mpvpaper`)
+- Rust toolchain (optional — for parser module development: `rust`, `cargo`, `clippy`, `rust-analyzer` via `rustup`)
 
 ---
+
+## Unreleased (dev)
+
+- **Rust modules**: `window_rule_conflicts.rs` (conflict detection) and `fans.rs` (PWM percentage conversion) are now complete — fully tested (38/38 tests passing), clippy/fmt clean
+- **Self-update fix**: `app_update.sh` now explicitly pins the `main` branch instead of following GitHub's default branch (previously pulled from `dev` by mistake)
 
 ## Roadmap
 
@@ -218,6 +256,13 @@ IS_GERMAN = False  # force English
 - [x] In-app update UI
 - [x] English / German language support
 - [x] Fan & temperature monitoring with GPU fan control
+- [x] Rust module for monitors.conf parsing
+- [x] Rust module for keybinds.conf parsing
+- [x] Rust module for rules.conf parsing
+- [x] Rust module for window-rule conflict detection
+- [x] Rust module for fan PWM percentage conversion
+- [x] CI pipeline with Python and Rust linting/tests
+- [ ] PyO3 bindings for Rust to Python integration
 - [ ] Theming / accent color sync with Caelestia
 - [ ] Keybind key-grabber (record shortcuts by pressing keys)
 
