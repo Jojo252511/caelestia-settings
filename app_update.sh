@@ -44,6 +44,8 @@ echo ">>> [3/3] Running installer for the new version..."
 echo
 cd "$TEMP_DIR"
 
+# install.sh sources doctor.sh and runs the Hyprland integration checks
+# itself, so no separate doctor.sh call is needed here.
 if [ -f "install.sh" ]; then
     chmod +x install.sh
     ./install.sh
