@@ -4,3 +4,4 @@
 //! own file (e.g. `keybinds.rs`) and is unit-tested with `cargo test`.
 
 pub mod keybinds;
+pub mod rules;
