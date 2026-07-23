@@ -5,3 +5,4 @@
 
 pub mod config;
 pub mod keybinds;
+pub mod rules;
