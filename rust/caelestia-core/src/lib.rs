@@ -6,3 +6,4 @@
 pub mod config;
 pub mod keybinds;
 pub mod rules;
+pub mod window_rule_conflicts;
