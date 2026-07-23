@@ -138,16 +138,10 @@ HYPR_CONFIG_FILE="$HYPR_CONFIG_DIR/hyprland.conf"
 HYPR_INCLUDES_DIR="$HYPR_CONFIG_DIR/hyprland"
 RULES_CONFIG_FILE="$HYPR_INCLUDES_DIR/rules.conf"
 
-mkdir -p "$HYPR_CONFIG_DIR"
-mkdir -p "$HYPR_INCLUDES_DIR"
-touch "$HYPR_CONFIG_FILE"
-touch "$RULES_CONFIG_FILE"
-
-RULES_SOURCE="source = $RULES_CONFIG_FILE"
-if ! grep -q -F "$RULES_SOURCE" "$HYPR_CONFIG_FILE"; then
-    echo "   ...Adding 'source' rule for rules.conf to hyprland.conf."
-    echo "$RULES_SOURCE" >> "$HYPR_CONFIG_FILE"
-fi
+# The bind/source/polkit checks below used to be duplicated here; they now
+# live in doctor.sh so a standalone `./doctor.sh` run can repair them too.
+source "$SCRIPT_DIR/doctor.sh"
+run_hyprland_doctor
 
 NEW_RULES_TAG="# Caelestia Settings Rules"
 if ! grep -q -F "$NEW_RULES_TAG" "$RULES_CONFIG_FILE"; then
@@ -160,29 +154,6 @@ windowrule = center 1, match:class org\.caelestia\.settings
 EOM
 else
     echo "   ...Window rules already exist in rules.conf."
-fi
-
-BIND_CMD="bind = SUPER, I, exec, caelestia-settings"
-if ! grep -q -F "bind = SUPER, I, exec, caelestia-settings" "$HYPR_CONFIG_FILE"; then
-    echo "   ...Adding shortcut (Super+I) to hyprland.conf."
-    echo "$BIND_CMD" >> "$HYPR_CONFIG_FILE"
-fi
-
-AUTH_CMD="exec-once = /usr/lib/polkit-kde-authentication-agent-1"
-if ! grep -q -F "/usr/lib/polkit-kde-authentication-agent-1" "$HYPR_CONFIG_FILE"; then
-    echo "   ...Adding Polkit agent to hyprland.conf."
-    echo "$AUTH_CMD" >> "$HYPR_CONFIG_FILE"
-fi
-
-MONITOR_CONFIG_FILE_PATH="$HYPR_INCLUDES_DIR/monitors.conf"
-SOURCE_LINE="source = $MONITOR_CONFIG_FILE_PATH"
-if ! grep -q -F "$SOURCE_LINE" "$HYPR_CONFIG_FILE"; then
-    echo "   ...Adding 'source' rule for monitors.conf."
-    cat >> "$HYPR_CONFIG_FILE" <<- EOM
-
-# Caelestia Monitor Config
-$SOURCE_LINE
-EOM
 fi
 
 echo "--- Hyprland configuration done."
