@@ -1,5 +1,5 @@
 import subprocess
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw
 from src.config import APP_DATA_DIR
 from src.pages.general import GeneralPage
 from src.pages.monitor import MonitorPage

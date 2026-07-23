@@ -1,5 +1,4 @@
 import subprocess
-from pathlib import Path
 from src.lang import t
 from gi.repository import Gtk, Adw, GLib
 from src.config import HYPR_MONITORS_CONF, parse_monitors_conf

@@ -1,0 +1,8 @@
+target-version = "py312"
+
+[lint]
+ignore = [
+    "E402", # gi.require_version(...) must run before `from gi.repository import ...`
+    "E701", # intentional compact statements, e.g. `if x: y`
+    "E702", # intentional compact statements, e.g. `a; b`
+]

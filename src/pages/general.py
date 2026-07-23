@@ -1,7 +1,6 @@
-import os
 import re
 import subprocess
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw
 from src.config import HYPR_INPUT_CONF
 from src.lang import t
 

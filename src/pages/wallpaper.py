@@ -45,7 +45,7 @@ def _ensure_dirs():
 def _write_mpvpaper_autostart(video_path: Path | None):
     _EXECS_CONF.parent.mkdir(parents=True, exist_ok=True)
     lines = _EXECS_CONF.read_text().splitlines() if _EXECS_CONF.exists() else []
-    lines = [l for l in lines if _MPVPAPER_MARKER not in l]
+    lines = [line for line in lines if _MPVPAPER_MARKER not in line]
     if video_path is not None:
         lines.append(
             f"exec-once = mpvpaper '*' {shlex.quote(str(video_path))}"
