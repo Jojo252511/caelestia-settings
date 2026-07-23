@@ -27,6 +27,10 @@ class AboutPage(Gtk.Box):
                     info.update(data)
         except Exception as e: print(f"Err: {e}")
 
+        # Exposed so MainWindow's background update check can compare against
+        # it without re-reading/re-parsing manifest.json itself.
+        self.local_version = info["version"]
+
         # Info Group
         info_group = Adw.PreferencesGroup()
         self.append(info_group)
