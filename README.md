@@ -240,6 +240,11 @@ Triggers on push and pull request to `main` and `dev` branches.
 
 ---
 
+## Unreleased (dev)
+
+- **Rust modules**: `window_rule_conflicts.rs` (conflict detection) and `fans.rs` (PWM percentage conversion) are now complete — fully tested (38/38 tests passing), clippy/fmt clean
+- **Self-update fix**: `app_update.sh` now explicitly pins the `main` branch instead of following GitHub's default branch (previously pulled from `dev` by mistake)
+
 ## Roadmap
 
 - [x] Monitor canvas with drag-and-drop
@@ -254,6 +259,8 @@ Triggers on push and pull request to `main` and `dev` branches.
 - [x] Rust module for monitors.conf parsing
 - [x] Rust module for keybinds.conf parsing
 - [x] Rust module for rules.conf parsing
+- [x] Rust module for window-rule conflict detection
+- [x] Rust module for fan PWM percentage conversion
 - [x] CI pipeline with Python and Rust linting/tests
 - [ ] PyO3 bindings for Rust to Python integration
 - [ ] Theming / accent color sync with Caelestia
