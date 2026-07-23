@@ -7,6 +7,7 @@ APP_PID=$1
 
 # --- CONFIGURATION ---
 GIT_REPO_URL="https://github.com/Jojo252511/caelestia-settings.git"
+GIT_BRANCH="main"
 TEMP_DIR="/tmp/caelestia-settings-update"
 
 echo "#######################################"
@@ -27,8 +28,8 @@ echo ">>> [1/3] Cleaning up temporary files..."
 rm -rf "$TEMP_DIR"
 
 echo ">>> [2/3] Downloading latest version from Git..."
-echo "Repo: $GIT_REPO_URL"
-if git clone "$GIT_REPO_URL" "$TEMP_DIR"; then
+echo "Repo: $GIT_REPO_URL (branch: $GIT_BRANCH)"
+if git clone --branch "$GIT_BRANCH" --single-branch "$GIT_REPO_URL" "$TEMP_DIR"; then
     echo "   ...Download successful."
 else
     echo
