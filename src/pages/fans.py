@@ -23,6 +23,11 @@ try:
 except ImportError:
     _HAS_NVML = False
 
+try:
+    import caelestia_core
+except ImportError:
+    caelestia_core = None
+
 _HWMON = Path("/sys/class/hwmon")
 _CPU_TEMP_KEYS = ["k10temp", "coretemp", "cpu_thermal", "nct6798"]
 
@@ -114,7 +119,11 @@ def _find_pwm_channels() -> list[dict]:
                 enable = hwmon / f"pwm{i}_enable"
                 fan_rpm_file = hwmon / f"fan{i}_input"
                 try:
-                    cur_pct = round(int(pwm.read_text()) / 255 * 100)
+                    raw = int(pwm.read_text())
+                    if caelestia_core is not None:
+                        cur_pct = caelestia_core.pwm_raw_to_percent(raw)
+                    else:
+                        cur_pct = round(raw / 255 * 100)
                 except Exception:
                     cur_pct = 50
                 channels.append({
@@ -315,6 +324,11 @@ class FansPage(Gtk.Box):
         # Try without root first
         errors = []
         for sl, ch in self._pwm_sliders:
+            # sl.get_value() can be fractional (continuous mouse drag), so this
+            # goes through the same int(value / 100 * 255) formula as the
+            # Python fallback rather than caelestia_core.percent_to_pwm_raw()
+            # (which takes an already-integer percent and would truncate at a
+            # different point, drifting the result by up to 1/255).
             pwm_val = int(sl.get_value() / 100 * 255)
             try:
                 if ch["enable"].exists():
@@ -379,7 +393,10 @@ class FansPage(Gtk.Box):
     def _write_with_sudo(self, values: list, password: str):
         tee_lines = []
         for enable, pwm, pct in values:
-            pwm_val = int(pct / 100 * 255)
+            if caelestia_core is not None:
+                pwm_val = caelestia_core.percent_to_pwm_raw(pct)
+            else:
+                pwm_val = int(pct / 100 * 255)
             if enable.exists():
                 tee_lines.append(
                     f"printf '1\\n' | sudo -A tee {shlex.quote(str(enable))} > /dev/null"
