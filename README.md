@@ -193,13 +193,13 @@ caelestia-settings/
 The application uses a hybrid Python + Rust architecture:
 
 - **Python/GTK4**: The main application, UI, and all user interaction logic is written in Python using GTK4 and Libadwaita
-- **Rust Core** (`caelestia-core`): Pure Rust crate containing all configuration file parsers (monitors.conf, workspaces.conf, keybinds.conf, variables.conf, rules.conf) and utility functions (PWM conversion, conflict detection)
+- **Rust Core** (`caelestia-core`): Primary Rust crate providing all configuration file parsers (monitors.conf, workspaces.conf, keybinds.conf, variables.conf, rules.conf) and utility functions (PWM conversion, conflict detection)
 - **PyO3 Bridge** (`caelestia-py`): Exposes `caelestia-core` to Python via PyO3, allowing the Python code to call Rust functions as if they were native Python extensions
 
 This separation allows:
 - Fast, reliable parsing of complex config files in Rust
 - Full unit testing of parsing logic without Python dependencies
-- Gradual migration of performance-critical components from Python to Rust
+- Complete migration of configuration parsers to Rust (mandatory backend)
 
 ---
 
