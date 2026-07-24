@@ -95,16 +95,14 @@
 
 ### Dependencies
 
-For the Python application:
+For the application (Python UI + Rust parsing core):
 ```bash
-sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil
+sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil python-cairo rust
 ```
 
-For Rust module development (optional):
+For Rust module development — linting/testing only, not required just to build/run the app (optional):
 ```bash
-sudo pacman -S --needed rust python-pip
 rustup component add clippy rust-analyzer
-pip install maturin
 ```
 
 ### Install
@@ -117,14 +115,21 @@ cd caelestia-settings
 
 The installer will:
 - Copy the app to `~/.local/share/caelestia-settings/`
+- Build the `caelestia_core` Rust extension (via a throwaway venv + `maturin`) and install it alongside the app — this step compiles Rust code and can take a minute
 - Create a `caelestia-settings` command in `~/.local/bin/`
 - Add a `.desktop` entry to the app menu
 - Add window rules and a `Super+I` keybind to your Hyprland config
 
 ### Run without installing
 
+`caelestia_core` is a hard dependency — build it into your environment first:
 ```bash
-git clone https://github.com/Jojo252511/caelestia-settings.git
+cd caelestia-settings/rust/caelestia-py
+python3 -m venv .venv && .venv/bin/pip install maturin && .venv/bin/maturin develop
+```
+
+Then, from the same environment:
+```bash
 cd caelestia-settings
 python main.py
 ```
@@ -252,14 +257,14 @@ Triggers on push and pull request to `main` and `dev` branches.
 - Hyprland
 - [Caelestia](https://github.com/caelestia-dots/caelestia) rice
 - Python 3.12+
-- `python-gobject`, `libadwaita`, `pamixer`, `git`, `python-psutil`
+- `python-gobject`, `libadwaita`, `pamixer`, `git`, `python-psutil`, `python-cairo`
+- `rust` (required — `caelestia_core` is built from source at install time, see Installation above)
 - `python-nvidia-ml-py` (optional — for GPU fan control: `yay -S python-nvidia-ml-py`)
 - `yay` (for system updates)
 - `nmcli` (for Wi-Fi)
 - `ffmpeg` (for video wallpaper thumbnails, optional)
 - `mpvpaper` (for video wallpapers, optional — `yay -S mpvpaper`)
-- Rust toolchain (optional — for parser module development: `rust`, `cargo`, `clippy`, `rust-analyzer` via `rustup`)
-- `python-pip` and `maturin` (optional — for building PyO3 bindings: `sudo pacman -S python-pip; pip install maturin`)
+- `clippy`, `rust-analyzer` (optional — for Rust module development only, via `rustup component add`)
 
 ---
 
@@ -287,8 +292,8 @@ Triggers on push and pull request to `main` and `dev` branches.
 - [x] Rust module for fan PWM percentage conversion
 - [x] CI pipeline with Python and Rust linting/tests
 - [x] PyO3 bindings for Rust to Python integration (via `caelestia-py`)
-- [x] Integrate Rust parsers in fans.py, keybinds.py
-- [ ] Integrate Rust parsers in config.py (monitors/rules parsing), window_rules.py (in progress)
+- [x] Integrate Rust parsers in fans.py, keybinds.py, config.py (monitors/rules parsing), window_rules.py
+- [x] `caelestia_core` built and installed automatically by `install.sh` — no more optional Python fallback, Rust is a hard dependency
 - [ ] Theming / accent color sync with Caelestia
 - [ ] Keybind key-grabber (record shortcuts by pressing keys)
 
