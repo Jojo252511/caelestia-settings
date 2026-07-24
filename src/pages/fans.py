@@ -324,10 +324,12 @@ class FansPage(Gtk.Box):
         # Try without root first
         errors = []
         for sl, ch in self._pwm_sliders:
-            if caelestia_core is not None:
-                pwm_val = caelestia_core.percent_to_pwm_raw(int(sl.get_value()))
-            else:
-                pwm_val = int(sl.get_value() / 100 * 255)
+            # sl.get_value() can be fractional (continuous mouse drag), so this
+            # goes through the same int(value / 100 * 255) formula as the
+            # Python fallback rather than caelestia_core.percent_to_pwm_raw()
+            # (which takes an already-integer percent and would truncate at a
+            # different point, drifting the result by up to 1/255).
+            pwm_val = int(sl.get_value() / 100 * 255)
             try:
                 if ch["enable"].exists():
                     ch["enable"].write_text("1\n")
