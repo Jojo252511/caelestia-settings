@@ -24,7 +24,7 @@
 - Per-monitor settings: resolution, refresh rate, rotation, bit depth (8/10-bit HDR), scale
 - Set primary monitor (`xrandr --primary` via `execs.conf`)
 - Toggle taskbar visibility per monitor (`shell.json: bar.persistent`)
-- Rust-based parser for `monitors.conf` and `workspaces.conf` (in development)
+- Rust-based parser for `monitors.conf` and `workspaces.conf` — implemented, not yet used by the running app
 
 ### Workspaces
 - Visual editor grouped by monitor (physical order from `hyprctl monitors`)
@@ -38,7 +38,7 @@
 - Search and filter by bind type (`bind`, `binde`, `bindl` etc.)
 - Create, edit and delete keybinds with automatic backup before every change
 - Live reload via `hyprctl reload`
-- Rust-based parser for `keybinds.conf` and `variables.conf` (in development)
+- Rust-based parser for `keybinds.conf` and `variables.conf` — implemented, not yet used by the running app
 
 ### Window Rules
 - App scanner — reads all `.desktop` files from system and user applications
@@ -47,7 +47,7 @@
 - Handles Spotify Wayland and Chromium web apps automatically
 - Reads and displays existing `rules.conf` — manual rules are preserved, never duplicated
 - Conflict detection — warns before saving if the same class is assigned twice
-- Rust-based parser for `rules.conf` (in development) for improved performance and reliability
+- Rust-based parser for `rules.conf` — implemented, not yet used by the running app, for improved performance and reliability
 
 ### General
 - Keyboard layout selector — ~90 XKB layouts with live Hyprland apply
@@ -262,7 +262,8 @@ Triggers on push and pull request to `main` and `dev` branches.
 - [x] Rust module for window-rule conflict detection
 - [x] Rust module for fan PWM percentage conversion
 - [x] CI pipeline with Python and Rust linting/tests
-- [ ] PyO3 bindings for Rust to Python integration
+- [x] PyO3 bindings for Rust to Python integration
+- [ ] Integrate Rust parsers in src/pages/*.py (fans.py, keybinds.py in progress)
 - [ ] Theming / accent color sync with Caelestia
 - [ ] Keybind key-grabber (record shortcuts by pressing keys)
 
