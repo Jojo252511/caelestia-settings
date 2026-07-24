@@ -287,6 +287,7 @@ Triggers on push and pull request to `main` and `dev` branches.
 - [x] Rust module for fan PWM percentage conversion
 - [x] CI pipeline with Python and Rust linting/tests
 - [x] PyO3 bindings for Rust to Python integration (via `caelestia-py`)
+- [ ] Integrate Rust parsers in src/pages/*.py (fans.py, keybinds.py in progress)
 - [ ] Theming / accent color sync with Caelestia
 - [ ] Keybind key-grabber (record shortcuts by pressing keys)
 
