@@ -3,6 +3,11 @@ import os
 import json
 from pathlib import Path
 
+try:
+    import caelestia_core
+except ImportError:
+    caelestia_core = None
+
 # Pfade
 CONFIG_DIR = Path(os.path.expanduser("~/.config/caelestia-settings"))
 MONITOR_CONFIG_FILE = CONFIG_DIR / "monitors.json"
@@ -70,41 +75,58 @@ def parse_monitors_conf() -> dict:
         return {"monitors": [], "workspaces": [], "workspace_options": _fallback_ws_options()}
 
     try:
-        with open(HYPR_MONITORS_CONF, "r") as f:
-            for raw_line in f:
-                line = raw_line.strip()
-                if not line or line.startswith("#"):
-                    continue
-
-                # monitor = DP-1,2560x1440@179.95,0x0,1, bitdepth, 10
-                if line.startswith("monitor"):
-                    parts = [p.strip() for p in line.split("=", 1)[1].split(",")]
-                    if parts:
-                        monitors.append({
-                            "name":       parts[0],
-                            "resolution": parts[1] if len(parts) > 1 else "?",
-                            "position":   parts[2] if len(parts) > 2 else "auto",
-                            "scale":      parts[3] if len(parts) > 3 else "1",
-                        })
-
-                # workspace = 1, monitor:DP-1, default:true
-                elif line.startswith("workspace"):
-                    rest   = line.split("=", 1)[1]
-                    tokens = [t.strip() for t in rest.split(",")]
-                    if not tokens:
+        if caelestia_core is not None:
+            text = HYPR_MONITORS_CONF.read_text()
+            rust_monitors, rust_workspaces = caelestia_core.parse_monitors_conf(text)
+            monitors = [
+                {
+                    "name":       m.name,
+                    "resolution": m.resolution,
+                    "position":   m.position,
+                    "scale":      m.scale,
+                }
+                for m in rust_monitors
+            ]
+            workspaces = [
+                {"number": w.number, "monitor": w.monitor, "default": w.default}
+                for w in rust_workspaces
+            ]
+        else:
+            with open(HYPR_MONITORS_CONF, "r") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
                         continue
-                    try:
-                        ws_num = int(tokens[0])
-                    except ValueError:
-                        continue
-                    monitor_name = ""
-                    is_default   = False
-                    for tok in tokens[1:]:
-                        if tok.startswith("monitor:"):
-                            monitor_name = tok.split("monitor:")[1]
-                        if "default:true" in tok:
-                            is_default = True
-                    workspaces.append({"number": ws_num, "monitor": monitor_name, "default": is_default})
+
+                    # monitor = DP-1,2560x1440@179.95,0x0,1, bitdepth, 10
+                    if line.startswith("monitor"):
+                        parts = [p.strip() for p in line.split("=", 1)[1].split(",")]
+                        if parts:
+                            monitors.append({
+                                "name":       parts[0],
+                                "resolution": parts[1] if len(parts) > 1 else "?",
+                                "position":   parts[2] if len(parts) > 2 else "auto",
+                                "scale":      parts[3] if len(parts) > 3 else "1",
+                            })
+
+                    # workspace = 1, monitor:DP-1, default:true
+                    elif line.startswith("workspace"):
+                        rest   = line.split("=", 1)[1]
+                        tokens = [t.strip() for t in rest.split(",")]
+                        if not tokens:
+                            continue
+                        try:
+                            ws_num = int(tokens[0])
+                        except ValueError:
+                            continue
+                        monitor_name = ""
+                        is_default   = False
+                        for tok in tokens[1:]:
+                            if tok.startswith("monitor:"):
+                                monitor_name = tok.split("monitor:")[1]
+                            if "default:true" in tok:
+                                is_default = True
+                        workspaces.append({"number": ws_num, "monitor": monitor_name, "default": is_default})
 
     except Exception as e:
         print(f"Fehler beim Parsen von monitors.conf: {e}")
