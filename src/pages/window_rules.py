@@ -10,10 +10,7 @@ from src.config import (
     HYPR_RULES_CONF,
 )
 
-try:
-    import caelestia_core
-except ImportError:
-    caelestia_core = None
+import caelestia_core
 
 FLOAT_OPTIONS = [
     ("default", t("Standard (no rule)")),
@@ -240,19 +237,10 @@ class WindowRulesPage(Gtk.Box):
             ws = s.get("workspace", "default")
             rules.append((wm, ws))
 
-        if caelestia_core is not None:
-            conflicts = [
-                f"• {c.wm_class}: {c.first_workspace} ↔ {c.conflicting_workspace}"
-                for c in caelestia_core.find_conflicts(rules)
-            ]
-        else:
-            seen: dict[str, str] = {}
-            conflicts = []
-            for wm, ws in rules:
-                if ws == "default" or not wm: continue
-                if wm in seen and seen[wm] != ws:
-                    conflicts.append(f"• {wm}: {seen[wm]} ↔ {ws}")
-                seen[wm] = ws
+        conflicts = [
+            f"• {c.wm_class}: {c.first_workspace} ↔ {c.conflicting_workspace}"
+            for c in caelestia_core.find_conflicts(rules)
+        ]
         self._conflicts = conflicts
         if conflicts:
             self.conflict_banner.set_title(f"{len(conflicts)} {t('conflicts detected')}")

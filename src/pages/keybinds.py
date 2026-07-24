@@ -6,10 +6,7 @@ from pathlib import Path
 from src.lang import t
 from gi.repository import Gtk, Adw
 
-try:
-    import caelestia_core
-except ImportError:
-    caelestia_core = None
+import caelestia_core
 
 KEYBINDS_CONF = Path.home() / ".config/hypr/hyprland/keybinds.conf"
 VARIABLES_CONF = Path.home() / ".config/hypr/variables.conf"
@@ -25,8 +22,6 @@ BIND_RE = re.compile(
     r'\s*(?:#\s*(.*))?$',
     re.IGNORECASE,
 )
-VAR_RE = re.compile(r'^\s*\$([A-Za-z0-9_]+)\s*=\s*(.*)$')
-
 BIND_TYPE_LABELS = {
     "bind":   "Normal",
     "binde":  "Repeat",
@@ -57,36 +52,15 @@ DISPATCHERS = sorted([
 def _parse_variables(path: Path) -> dict:
     if not path.exists():
         return {}
-    if caelestia_core is not None:
-        try:
-            return caelestia_core.parse_variables(path.read_text())
-        except Exception as e:
-            print(f"Variablen-Parser fehler: {e}")
-            return {}
-    variables = {}
     try:
-        for line in path.read_text().splitlines():
-            m = VAR_RE.match(line)
-            if m:
-                val = re.sub(r'\s*#.*$', '', m.group(2)).strip()
-                variables[m.group(1)] = val
-        for _ in range(5):
-            for k, v in variables.items():
-                for rn, rv in variables.items():
-                    v = v.replace(f"${rn}", rv)
-                variables[k] = v
+        return caelestia_core.parse_variables(path.read_text())
     except Exception as e:
         print(f"Variablen-Parser fehler: {e}")
-    return variables
+        return {}
 
 
 def _resolve(raw: str, variables: dict) -> str:
-    if caelestia_core is not None:
-        return caelestia_core.resolve(raw, variables)
-    result = raw.strip()
-    for name, val in variables.items():
-        result = result.replace(f"${name}", val)
-    return result
+    return caelestia_core.resolve(raw, variables)
 
 
 def parse_keybinds() -> list[dict]:
