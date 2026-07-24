@@ -1,13 +1,15 @@
 target-version = "py312"
+line-length = 120
 
 [lint]
+select = ["E", "F"]
 # Explicit select so upgrading ruff can't silently widen the enforced rule
 # set again (2026-07-24: an unpinned CI install pulled ruff 0.16.0, which
 # enabled ~100 additional rules — e.g. BLE001, I001, PLW1510 — across the
 # whole codebase because only `ignore` was set, not `select`).
-select = ["E4", "E7", "E9", "F"]
 ignore = [
     "E402", # gi.require_version(...) must run before `from gi.repository import ...`
+    "E501", # line length handled separately
     "E701", # intentional compact statements, e.g. `if x: y`
     "E702", # intentional compact statements, e.g. `a; b`
 ]
