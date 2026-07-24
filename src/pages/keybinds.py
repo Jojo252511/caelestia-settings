@@ -58,7 +58,11 @@ def _parse_variables(path: Path) -> dict:
     if not path.exists():
         return {}
     if caelestia_core is not None:
-        return caelestia_core.parse_variables(path.read_text())
+        try:
+            return caelestia_core.parse_variables(path.read_text())
+        except Exception as e:
+            print(f"Variablen-Parser fehler: {e}")
+            return {}
     variables = {}
     try:
         for line in path.read_text().splitlines():
