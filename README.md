@@ -122,13 +122,15 @@ The installer will:
 
 ### Run without installing
 
-`caelestia_core` is a hard dependency — build it into your environment first:
+`caelestia_core` is a hard dependency — build it into your environment first. Use `--system-site-packages` so the venv can also see the system `python-gobject` (PyGI) install; a plain venv won't have it and `python main.py` will fail with `ModuleNotFoundError: No module named 'gi'`. Activate the venv (rather than calling `.venv/bin/maturin` by path) so `maturin develop` reliably targets it instead of some other `.venv` it might auto-detect elsewhere:
 ```bash
 cd caelestia-settings/rust/caelestia-py
-python3 -m venv .venv && .venv/bin/pip install maturin && .venv/bin/maturin develop
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install maturin && maturin develop
 ```
 
-Then, from the same environment:
+Then, from the same activated environment:
 ```bash
 cd caelestia-settings
 python main.py
