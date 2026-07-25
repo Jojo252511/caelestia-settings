@@ -146,6 +146,11 @@ TRANSLATIONS = {
     "Connection failed": "Verbindung fehlgeschlagen",
     "Connection successful": "Verbindung erfolgreich",
     "Scanning...": "Suche...",
+    "NetworkManager is not available.": "NetworkManager ist nicht verfügbar.",
+    "Network not found.": "Netzwerk nicht gefunden.",
+    "Enterprise networks are not supported.": "Unternehmensnetzwerke (802.1X) werden nicht unterstützt.",
+    "Incorrect password": "Falsches Passwort",
+    "Connection timed out.": "Zeitüberschreitung bei der Verbindung.",
 
     # ── Audio ─────────────────────────────────────────────────────────────
     "Audio": "Audio",
