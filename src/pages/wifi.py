@@ -3,6 +3,11 @@ import threading
 from gi.repository import Gtk, Adw, GLib
 from src.lang import t
 
+try:
+    from src import network
+except (ImportError, ValueError):
+    network = None
+
 
 def has_wifi_adapter() -> bool:
     try:
@@ -41,10 +46,16 @@ class WifiPage(Gtk.Box):
         self.set_margin_start(12)
         self.set_margin_end(12)
 
-        if not has_wifi_adapter():
+        unavailable = None
+        if network is None:
+            unavailable = t("NetworkManager is not available.")
+        elif not has_wifi_adapter():
+            unavailable = t("No Wi-Fi adapter found.")
+
+        if unavailable:
             status_page = Adw.StatusPage()
             status_page.set_icon_name("network-wireless-disabled-symbolic")
-            status_page.set_title(t("No Wi-Fi adapter found."))
+            status_page.set_title(unavailable)
             self.append(status_page)
             return
 
@@ -196,28 +207,16 @@ class WifiPage(Gtk.Box):
 
     def connect_to(self, ssid, password):
         self.show_toast(f"{t('Scanning...')} {ssid}...")
-        
-        def _thread():
-            cmd = ['nmcli', 'device', 'wifi', 'connect', ssid]
-            if password:
-                cmd.extend(['password', password])
-            
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            
-            success = res.returncode == 0
-            # --- FIX: Lambda für Parameter-Übergabe ---
-            GLib.idle_add(lambda: self.on_connect_finished(success, res.stderr))
+        # The password goes to NetworkManager over D-Bus, never on a command
+        # line where other local users could read it (issue #44).
+        network.connect(ssid, password, self.on_connect_finished)
 
-        threading.Thread(target=_thread, daemon=True).start()
-
-    def on_connect_finished(self, success, error_msg):
+    def on_connect_finished(self, success, detail):
         if success:
             self.show_toast(t("Connection successful"))
             self.scan_networks()
         else:
-            self.show_toast(f"{t('Connection failed')}: {error_msg.strip()}")
-        # Wichtig: GLib Callback muss False zurückgeben, um zu stoppen
-        return False 
+            self.show_toast(f"{t('Connection failed')}: {detail.strip()}")
 
     def show_toast(self, message):
         toast = Adw.Toast.new(message)
