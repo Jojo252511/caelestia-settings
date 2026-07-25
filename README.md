@@ -11,6 +11,10 @@
 
 ## Features
 
+### Home
+- System at a Glance overview: current wallpaper (thumbnail preview), monitors summary, active Wi-Fi connection, keyboard layout, CPU/GPU temperatures with fan speeds
+- Quick Actions for one-click navigation to Wallpaper, Monitor, WLAN, Keybinds, and Updates pages
+
 ### Wallpaper
 - Image and video tabs — browse `~/Pictures/Wallpapers/` and `~/Videos/Wallpaper/`
 - Thumbnails generated via ffmpeg for videos, cached for fast reloads
@@ -56,7 +60,8 @@
 - Timezone (via `timedatectl`, requires sudo)
 
 ### WLAN
-- Scan and connect to Wi-Fi networks
+- Scan and connect to Wi-Fi networks via NetworkManager D-Bus API
+- Secure password handling — credentials are passed over D-Bus, never exposed in process arguments (fixes issue #44)
 - Password dialog for secured networks
 - Disconnect from active network
 
@@ -97,7 +102,7 @@
 
 For the application (Python UI + Rust parsing core):
 ```bash
-sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil python-cairo rust
+sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil python-cairo rust networkmanager
 ```
 
 For Rust module development — linting/testing only, not required just to build/run the app (optional):

@@ -31,7 +31,7 @@ _CPU_TEMP_KEYS = ["k10temp", "coretemp", "cpu_thermal", "nct6798"]
 
 # ── Hardware readers ──────────────────────────────────────────────────────────
 
-def _read_cpu_temp() -> int | None:
+def read_cpu_temp() -> int | None:
     if not _HAS_PSUTIL:
         return None
     try:
@@ -57,7 +57,7 @@ def _read_sys_fans() -> list[dict]:
         return []
 
 
-def _read_gpu_stats() -> dict | None:
+def read_gpu_stats() -> dict | None:
     if not _HAS_NVML:
         return None
     try:
@@ -246,8 +246,8 @@ class FansPage(Gtk.Box):
 
     def _poll(self):
         while self._polling:
-            cpu   = _read_cpu_temp()
-            gpu   = _read_gpu_stats()
+            cpu   = read_cpu_temp()
+            gpu   = read_gpu_stats()
             fans  = _read_sys_fans()
             GLib.idle_add(self._refresh, cpu, gpu, fans)
             time.sleep(2)
