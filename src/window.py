@@ -3,6 +3,7 @@ import threading
 import urllib.error
 import urllib.request
 from gi.repository import Gtk, Adw, GLib
+from src.pages.home import HomePage
 from src.pages.general import GeneralPage
 from src.pages.monitor import MonitorPage
 from src.pages.audio import AudioPage
@@ -76,6 +77,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.about_page = AboutPage(self)
 
         # ── Stack befüllen ──────────────────────────────────────────────────
+        # HomePage reads about_page.local_version, so it is built after it.
+        self.stack.add_titled(HomePage(self),          "home",    t("Home"))
         self.stack.add_titled(GeneralPage(self),      "gen",     t("General"))
         self.stack.add_titled(WallpaperPage(self),     "wall",    "Wallpaper")
         self.stack.add_titled(WorkspacesPage(self),   "ws",      "Workspaces")
@@ -88,6 +91,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack.add_titled(UpdatePage(self),        "upd",     t("Updates"))
         self.stack.add_titled(self.about_page,         "about",   t("About"))
         # ───────────────────────────────────────────────────────────────────
+
+        self.stack.set_visible_child_name("home")
 
         threading.Thread(target=self._check_for_update, daemon=True).start()
 

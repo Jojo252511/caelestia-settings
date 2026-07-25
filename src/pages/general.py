@@ -106,7 +106,7 @@ KEYBOARD_LAYOUTS = [
 ]
 
 
-def _read_input_conf() -> dict:
+def read_input_conf() -> dict:
     """Liest input.conf und gibt ein Dict mit allen key=value zurück."""
     result = {}
     if not HYPR_INPUT_CONF.exists():
@@ -222,7 +222,7 @@ class GeneralPage(Gtk.Box):
     def _load_all(self):
         self.is_loading = True
 
-        conf = _read_input_conf()
+        conf = read_input_conf()
 
         # Tastaturlayout
         layout = conf.get("kb_layout", "us").lower()

@@ -23,13 +23,15 @@ try:
 except ImportError:
     _HAS_NVML = False
 
+import caelestia_core
+
 _HWMON = Path("/sys/class/hwmon")
 _CPU_TEMP_KEYS = ["k10temp", "coretemp", "cpu_thermal", "nct6798"]
 
 
 # ── Hardware readers ──────────────────────────────────────────────────────────
 
-def _read_cpu_temp() -> int | None:
+def read_cpu_temp() -> int | None:
     if not _HAS_PSUTIL:
         return None
     try:
@@ -55,7 +57,7 @@ def _read_sys_fans() -> list[dict]:
         return []
 
 
-def _read_gpu_stats() -> dict | None:
+def read_gpu_stats() -> dict | None:
     if not _HAS_NVML:
         return None
     try:
@@ -114,7 +116,7 @@ def _find_pwm_channels() -> list[dict]:
                 enable = hwmon / f"pwm{i}_enable"
                 fan_rpm_file = hwmon / f"fan{i}_input"
                 try:
-                    cur_pct = round(int(pwm.read_text()) / 255 * 100)
+                    cur_pct = caelestia_core.pwm_raw_to_percent(int(pwm.read_text()))
                 except Exception:
                     cur_pct = 50
                 channels.append({
@@ -244,8 +246,8 @@ class FansPage(Gtk.Box):
 
     def _poll(self):
         while self._polling:
-            cpu   = _read_cpu_temp()
-            gpu   = _read_gpu_stats()
+            cpu   = read_cpu_temp()
+            gpu   = read_gpu_stats()
             fans  = _read_sys_fans()
             GLib.idle_add(self._refresh, cpu, gpu, fans)
             time.sleep(2)
@@ -315,6 +317,11 @@ class FansPage(Gtk.Box):
         # Try without root first
         errors = []
         for sl, ch in self._pwm_sliders:
+            # sl.get_value() can be fractional (continuous mouse drag), so this
+            # stays as int(value / 100 * 255) rather than going through
+            # caelestia_core.percent_to_pwm_raw() (which takes an
+            # already-integer percent and would truncate at a different
+            # point, drifting the result by up to 1/255).
             pwm_val = int(sl.get_value() / 100 * 255)
             try:
                 if ch["enable"].exists():
@@ -379,7 +386,7 @@ class FansPage(Gtk.Box):
     def _write_with_sudo(self, values: list, password: str):
         tee_lines = []
         for enable, pwm, pct in values:
-            pwm_val = int(pct / 100 * 255)
+            pwm_val = caelestia_core.percent_to_pwm_raw(pct)
             if enable.exists():
                 tee_lines.append(
                     f"printf '1\\n' | sudo -A tee {shlex.quote(str(enable))} > /dev/null"

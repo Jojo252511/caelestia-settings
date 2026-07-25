@@ -10,6 +10,8 @@ from src.config import (
     HYPR_RULES_CONF,
 )
 
+import caelestia_core
+
 FLOAT_OPTIONS = [
     ("default", t("Standard (no rule)")),
     ("true",    "Float"),
@@ -229,15 +231,16 @@ class WindowRulesPage(Gtk.Box):
 
     def _on_rule_changed(self):
         # Konflikterkennung: selbe wm_class → zwei verschiedene Workspaces
-        seen: dict[str, str] = {}
-        conflicts = []
+        rules = []
         for row in self._rows.values():
             wm, s = row.get_rule()
             ws = s.get("workspace", "default")
-            if ws == "default" or not wm: continue
-            if wm in seen and seen[wm] != ws:
-                conflicts.append(f"• {wm}: {seen[wm]} ↔ {ws}")
-            seen[wm] = ws
+            rules.append((wm, ws))
+
+        conflicts = [
+            f"• {c.wm_class}: {c.first_workspace} ↔ {c.conflicting_workspace}"
+            for c in caelestia_core.find_conflicts(rules)
+        ]
         self._conflicts = conflicts
         if conflicts:
             self.conflict_banner.set_title(f"{len(conflicts)} {t('conflicts detected')}")

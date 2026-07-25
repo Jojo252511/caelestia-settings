@@ -54,7 +54,7 @@ def _write_mpvpaper_autostart(video_path: Path | None):
     _EXECS_CONF.write_text("\n".join(lines) + "\n")
 
 
-def _get_current_wallpaper() -> str:
+def get_current_wallpaper() -> str:
     p = Path.home() / ".local" / "state" / "caelestia" / "wallpaper" / "path.txt"
     try:
         return p.read_text().strip() if p.exists() else ""
@@ -315,7 +315,7 @@ class WallpaperPage(Gtk.Box):
 
         _ensure_dirs()
 
-        self._current     = _get_current_wallpaper()
+        self._current     = get_current_wallpaper()
         self._scheme_mode = _get_current_scheme_mode()
         self._mpv_proc: subprocess.Popen | None = None
 

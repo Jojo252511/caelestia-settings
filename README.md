@@ -2,7 +2,7 @@
 
 > A native GTK4/Libadwaita control center for [Caelestia](https://github.com/caelestia-dots/caelestia) Hyprland setups.
 
-![Version](https://img.shields.io/badge/version-1.2.1-blue)
+![Version](https://img.shields.io/badge/version-1.3.0-blue)
 ![Platform](https://img.shields.io/badge/platform-Arch%20Linux-1793d1)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Language](https://img.shields.io/badge/i18n-EN%20%2F%20DE-orange)
@@ -10,6 +10,10 @@
 ---
 
 ## Features
+
+### Home
+- System at a Glance overview: current wallpaper (thumbnail preview), monitors summary, active Wi-Fi connection, keyboard layout, CPU/GPU temperatures with fan speeds
+- Quick Actions for one-click navigation to Wallpaper, Monitor, WLAN, Keybinds, and Updates pages
 
 ### Wallpaper
 - Image and video tabs — browse `~/Pictures/Wallpapers/` and `~/Videos/Wallpaper/`
@@ -24,7 +28,7 @@
 - Per-monitor settings: resolution, refresh rate, rotation, bit depth (8/10-bit HDR), scale
 - Set primary monitor (`xrandr --primary` via `execs.conf`)
 - Toggle taskbar visibility per monitor (`shell.json: bar.persistent`)
-- Rust-based parser for `monitors.conf` and `workspaces.conf` (in development)
+- Rust-based parser for `monitors.conf` and `workspaces.conf`
 
 ### Workspaces
 - Visual editor grouped by monitor (physical order from `hyprctl monitors`)
@@ -38,7 +42,7 @@
 - Search and filter by bind type (`bind`, `binde`, `bindl` etc.)
 - Create, edit and delete keybinds with automatic backup before every change
 - Live reload via `hyprctl reload`
-- Rust-based parser for `keybinds.conf` and `variables.conf` (in development)
+- Rust-based parser for `keybinds.conf` and `variables.conf`
 
 ### Window Rules
 - App scanner — reads all `.desktop` files from system and user applications
@@ -47,7 +51,7 @@
 - Handles Spotify Wayland and Chromium web apps automatically
 - Reads and displays existing `rules.conf` — manual rules are preserved, never duplicated
 - Conflict detection — warns before saving if the same class is assigned twice
-- Rust-based parser for `rules.conf` (in development) for improved performance and reliability
+- Rust-based parser for `rules.conf` for improved performance and reliability
 
 ### General
 - Keyboard layout selector — ~90 XKB layouts with live Hyprland apply
@@ -56,7 +60,8 @@
 - Timezone (via `timedatectl`, requires sudo)
 
 ### WLAN
-- Scan and connect to Wi-Fi networks
+- Scan and connect to Wi-Fi networks via NetworkManager D-Bus API
+- Secure password handling — credentials are passed over D-Bus, never exposed in process arguments (fixes issue #44)
 - Password dialog for secured networks
 - Disconnect from active network
 
@@ -95,14 +100,13 @@
 
 ### Dependencies
 
-For the Python application:
+For the application (Python UI + Rust parsing core):
 ```bash
-sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil
+sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil python-cairo rust networkmanager
 ```
 
-For Rust module development (optional):
+For Rust module development — linting/testing only, not required just to build/run the app (optional):
 ```bash
-sudo pacman -S --needed rust
 rustup component add clippy rust-analyzer
 ```
 
@@ -116,14 +120,23 @@ cd caelestia-settings
 
 The installer will:
 - Copy the app to `~/.local/share/caelestia-settings/`
+- Build the `caelestia_core` Rust extension (via a throwaway venv + `maturin`) and install it alongside the app — this step compiles Rust code and can take a minute
 - Create a `caelestia-settings` command in `~/.local/bin/`
 - Add a `.desktop` entry to the app menu
 - Add window rules and a `Super+I` keybind to your Hyprland config
 
 ### Run without installing
 
+`caelestia_core` is a hard dependency — build it into your environment first. Use `--system-site-packages` so the venv can also see the system `python-gobject` (PyGI) install; a plain venv won't have it and `python main.py` will fail with `ModuleNotFoundError: No module named 'gi'`. Activate the venv (rather than calling `.venv/bin/maturin` by path) so `maturin develop` reliably targets it instead of some other `.venv` it might auto-detect elsewhere:
 ```bash
-git clone https://github.com/Jojo252511/caelestia-settings.git
+cd caelestia-settings/rust/caelestia-py
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install maturin && maturin develop
+```
+
+Then, from the same activated environment:
+```bash
 cd caelestia-settings
 python main.py
 ```
@@ -154,13 +167,19 @@ caelestia-settings/
 ├── ruff.toml                 # Python linter configuration
 ├── rust/                     # Rust workspace for parser modules
 │   ├── Cargo.toml            # Rust workspace root
-│   └── caelestia-core/       # Core parser modules
-│       ├── Cargo.toml        # Package configuration
+│   ├── caelestia-core/       # Core parser modules (pure Rust)
+│   │   ├── Cargo.toml        # Package configuration
+│   │   └── src/
+│   │       ├── lib.rs        # Module exports
+│   │       ├── config.rs     # monitors.conf and workspaces.conf parsing
+│   │       ├── keybinds.rs    # keybinds.conf and variables.conf parsing
+│   │       ├── rules.rs       # rules.conf windowrule parsing
+│   │       ├── window_rule_conflicts.rs  # Conflict detection for window rules
+│   │       └── fans.rs       # PWM percent/raw conversion for fan control
+│   └── caelestia-py/          # PyO3 bindings exposing caelestia-core to Python
+│       ├── Cargo.toml        # Package configuration with PyO3
 │       └── src/
-│           ├── lib.rs        # Module exports
-│           ├── config.rs     # monitors.conf and workspaces.conf parsing
-│           ├── keybinds.rs    # keybinds.conf and variables.conf parsing
-│           └── rules.rs       # rules.conf windowrule parsing
+│           └── lib.rs        # Python module registration (caelestia_core)
 └── src/
     ├── config.py             # Paths and config helpers
     ├── lang.py               # i18n (EN / DE — auto-detected from system locale)
@@ -178,6 +197,21 @@ caelestia-settings/
         ├── fans.py           # Fan & temperature monitoring and control
         └── about.py          # About page
 ```
+
+---
+
+## Architecture
+
+The application uses a hybrid Python + Rust architecture:
+
+- **Python/GTK4**: The main application, UI, and all user interaction logic is written in Python using GTK4 and Libadwaita
+- **Rust Core** (`caelestia-core`): Primary Rust crate providing all configuration file parsers (monitors.conf, workspaces.conf, keybinds.conf, variables.conf, rules.conf) and utility functions (PWM conversion, conflict detection)
+- **PyO3 Bridge** (`caelestia-py`): Exposes `caelestia-core` to Python via PyO3, allowing the Python code to call Rust functions as if they were native Python extensions
+
+This separation allows:
+- Fast, reliable parsing of complex config files in Rust
+- Full unit testing of parsing logic without Python dependencies
+- Complete migration of configuration parsers to Rust (mandatory backend)
 
 ---
 
@@ -217,7 +251,7 @@ IS_GERMAN = False  # force English
 Automated testing and linting via GitHub Actions workflow (`.github/workflows/ci.yml`):
 
 - **Python**: `ruff check` for linting (targets Python 3.12)
-- **Rust**: `cargo fmt --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`
+- **Rust**: `cargo fmt --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` for both `caelestia-core` and `caelestia-py` crates
 - **Security**: `gitleaks` for secret scanning
 
 Triggers on push and pull request to `main` and `dev` branches.
@@ -230,19 +264,21 @@ Triggers on push and pull request to `main` and `dev` branches.
 - Hyprland
 - [Caelestia](https://github.com/caelestia-dots/caelestia) rice
 - Python 3.12+
-- `python-gobject`, `libadwaita`, `pamixer`, `git`, `python-psutil`
+- `python-gobject`, `libadwaita`, `pamixer`, `git`, `python-psutil`, `python-cairo`
+- `rust` (required — `caelestia_core` is built from source at install time, see Installation above)
 - `python-nvidia-ml-py` (optional — for GPU fan control: `yay -S python-nvidia-ml-py`)
 - `yay` (for system updates)
 - `nmcli` (for Wi-Fi)
 - `ffmpeg` (for video wallpaper thumbnails, optional)
 - `mpvpaper` (for video wallpapers, optional — `yay -S mpvpaper`)
-- Rust toolchain (optional — for parser module development: `rust`, `cargo`, `clippy`, `rust-analyzer` via `rustup`)
+- `clippy`, `rust-analyzer` (optional — for Rust module development only, via `rustup component add`)
 
 ---
 
-## Unreleased (dev)
+## What's New in 1.3.0
 
 - **Rust modules**: `window_rule_conflicts.rs` (conflict detection) and `fans.rs` (PWM percentage conversion) are now complete — fully tested (38/38 tests passing), clippy/fmt clean
+- **PyO3 bindings**: New `caelestia-py` crate exposes all `caelestia-core` parsing and utility functions to Python as the `caelestia_core` extension module
 - **Self-update fix**: `app_update.sh` now explicitly pins the `main` branch instead of following GitHub's default branch (previously pulled from `dev` by mistake)
 
 ## Roadmap
@@ -262,7 +298,9 @@ Triggers on push and pull request to `main` and `dev` branches.
 - [x] Rust module for window-rule conflict detection
 - [x] Rust module for fan PWM percentage conversion
 - [x] CI pipeline with Python and Rust linting/tests
-- [ ] PyO3 bindings for Rust to Python integration
+- [x] PyO3 bindings for Rust to Python integration (via `caelestia-py`)
+- [x] Integrate Rust parsers in fans.py, keybinds.py, config.py (monitors/rules parsing), window_rules.py
+- [x] `caelestia_core` built and installed automatically by `install.sh` — no more optional Python fallback, Rust is a hard dependency
 - [ ] Theming / accent color sync with Caelestia
 - [ ] Keybind key-grabber (record shortcuts by pressing keys)
 

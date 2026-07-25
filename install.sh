@@ -26,9 +26,9 @@ echo
 
 # --- 2. Install system dependencies ---
 echo ">>> STEP 1: Installing system dependencies..."
-echo "The script requires 'python-gobject', 'libadwaita', 'pamixer' and 'git'."
+echo "The script requires 'python-gobject', 'libadwaita', 'pamixer', 'git' and 'rust'."
 echo "Please enter your sudo password:"
-sudo pacman -S --needed --noconfirm python-gobject libadwaita pamixer git python-psutil
+sudo pacman -S --needed --noconfirm python-gobject libadwaita pamixer git python-psutil python-cairo rust
 echo "--- Dependencies installed."
 echo
 
@@ -62,6 +62,37 @@ chmod +x "$APP_TARGET_MAIN"
 
 echo "   ...Copying 'src/' folder to $APP_DATA_DIR"
 cp -r "$SRC_FOLDER" "$APP_DATA_DIR/"
+
+# --- 5b. Build the caelestia_core Rust extension ---
+echo "   ...Building the caelestia_core Rust extension (this can take a minute)"
+RUST_DIR="$SCRIPT_DIR/rust/caelestia-py"
+if [ -d "$RUST_DIR" ]; then
+    BUILD_VENV=$(mktemp -d)
+    WHEEL_OUT=$(mktemp -d)
+    trap 'rm -rf "$BUILD_VENV" "$WHEEL_OUT"' EXIT
+
+    python3 -m venv "$BUILD_VENV"
+    "$BUILD_VENV/bin/pip" install --quiet maturin
+    ( cd "$RUST_DIR" && "$BUILD_VENV/bin/maturin" build --release --out "$WHEEL_OUT" )
+
+    WHEEL_FILE=$(find "$WHEEL_OUT" -name '*.whl' -print -quit)
+    if [ -z "$WHEEL_FILE" ]; then
+        echo "ERROR: caelestia_core build produced no wheel."
+        exit 1
+    fi
+    UNPACK_DIR=$(mktemp -d)
+    trap 'rm -rf "$BUILD_VENV" "$WHEEL_OUT" "$UNPACK_DIR"' EXIT
+    python3 -m zipfile -e "$WHEEL_FILE" "$UNPACK_DIR"
+    rm -rf "$APP_DATA_DIR/caelestia_core"
+    cp -r "$UNPACK_DIR/caelestia_core" "$APP_DATA_DIR/"
+
+    rm -rf "$BUILD_VENV" "$WHEEL_OUT" "$UNPACK_DIR"
+    trap - EXIT
+    echo "   ...caelestia_core built and installed to $APP_DATA_DIR/caelestia_core"
+else
+    echo "ERROR: 'rust/caelestia-py' not found — cannot build the caelestia_core extension."
+    exit 1
+fi
 
 # Copy update script
 if [ -f "$UPDATE_SCRIPT_SRC" ]; then

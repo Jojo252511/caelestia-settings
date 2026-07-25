@@ -14,6 +14,24 @@ TRANSLATIONS = {
     "Caelestia Settings": "Caelestia Einstellungen",
     "Update App": "App aktualisieren",
 
+    # ── Home ──────────────────────────────────────────────────────────────
+    "Home": "Startseite",
+    "System at a Glance": "System auf einen Blick",
+    "Quick Actions": "Schnellzugriff",
+    "Refresh": "Aktualisieren",
+    "Monitors": "Monitore",
+    "CPU Temperature": "CPU-Temperatur",
+    "GPU Temperature": "GPU-Temperatur",
+    "Not available": "Nicht verfügbar",
+    "Not connected": "Nicht verbunden",
+    "No monitors configured": "Keine Monitore konfiguriert",
+    "No supported GPU detected": "Keine unterstützte GPU erkannt",
+    "Change wallpaper and color scheme": "Wallpaper und Farbschema ändern",
+    "Arrange displays and resolutions": "Bildschirme und Auflösungen anordnen",
+    "Scan and connect to networks": "Netzwerke suchen und verbinden",
+    "View and edit shortcuts": "Tastenkürzel ansehen und bearbeiten",
+    "Check for system updates": "Nach System-Updates suchen",
+
     # ── General ───────────────────────────────────────────────────────────
     "General": "Allgemein",
     "Input": "Eingabe",
@@ -146,6 +164,11 @@ TRANSLATIONS = {
     "Connection failed": "Verbindung fehlgeschlagen",
     "Connection successful": "Verbindung erfolgreich",
     "Scanning...": "Suche...",
+    "NetworkManager is not available.": "NetworkManager ist nicht verfügbar.",
+    "Network not found.": "Netzwerk nicht gefunden.",
+    "Enterprise networks are not supported.": "Unternehmensnetzwerke (802.1X) werden nicht unterstützt.",
+    "Incorrect password": "Falsches Passwort",
+    "Connection timed out.": "Zeitüberschreitung bei der Verbindung.",
 
     # ── Audio ─────────────────────────────────────────────────────────────
     "Audio": "Audio",

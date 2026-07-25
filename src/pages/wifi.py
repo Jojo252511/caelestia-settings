@@ -3,6 +3,38 @@ import threading
 from gi.repository import Gtk, Adw, GLib
 from src.lang import t
 
+try:
+    from src import network
+except (ImportError, ValueError):
+    network = None
+
+
+def has_wifi_adapter() -> bool:
+    try:
+        res = subprocess.run(["nmcli", "device"], capture_output=True, text=True, timeout=5)
+        return "wifi" in res.stdout
+    except Exception:
+        return False
+
+
+def get_active_wifi_connection() -> str | None:
+    """SSID of the currently connected network, or None if not connected.
+
+    Reads the device table instead of `device wifi list` so it never triggers
+    a rescan — callers use this for a passive status read.
+    """
+    try:
+        cmd = ["nmcli", "-t", "-f", "TYPE,STATE,CONNECTION", "device", "status"]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        for line in res.stdout.splitlines():
+            parts = line.split(":")
+            if len(parts) >= 3 and parts[0] == "wifi" and parts[1] == "connected":
+                return parts[2]
+    except Exception:
+        pass
+    return None
+
+
 class WifiPage(Gtk.Box):
     def __init__(self, main_window, **kwargs):
         super().__init__(**kwargs)
@@ -14,10 +46,16 @@ class WifiPage(Gtk.Box):
         self.set_margin_start(12)
         self.set_margin_end(12)
 
-        if not self.check_wifi_adapter():
+        unavailable = None
+        if network is None:
+            unavailable = t("NetworkManager is not available.")
+        elif not has_wifi_adapter():
+            unavailable = t("No Wi-Fi adapter found.")
+
+        if unavailable:
             status_page = Adw.StatusPage()
             status_page.set_icon_name("network-wireless-disabled-symbolic")
-            status_page.set_title(t("No Wi-Fi adapter found."))
+            status_page.set_title(unavailable)
             self.append(status_page)
             return
 
@@ -47,13 +85,6 @@ class WifiPage(Gtk.Box):
         self.append(self.spinner)
 
         self.scan_networks()
-
-    def check_wifi_adapter(self):
-        try:
-            res = subprocess.run(["nmcli", "device"], capture_output=True, text=True, timeout=5)
-            return "wifi" in res.stdout
-        except Exception:
-            return False
 
     def on_scan_clicked(self, btn):
         self.scan_networks()
@@ -176,28 +207,16 @@ class WifiPage(Gtk.Box):
 
     def connect_to(self, ssid, password):
         self.show_toast(f"{t('Scanning...')} {ssid}...")
-        
-        def _thread():
-            cmd = ['nmcli', 'device', 'wifi', 'connect', ssid]
-            if password:
-                cmd.extend(['password', password])
-            
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            
-            success = res.returncode == 0
-            # --- FIX: Lambda für Parameter-Übergabe ---
-            GLib.idle_add(lambda: self.on_connect_finished(success, res.stderr))
+        # The password goes to NetworkManager over D-Bus, never on a command
+        # line where other local users could read it (issue #44).
+        network.connect(ssid, password, self.on_connect_finished)
 
-        threading.Thread(target=_thread, daemon=True).start()
-
-    def on_connect_finished(self, success, error_msg):
+    def on_connect_finished(self, success, detail):
         if success:
             self.show_toast(t("Connection successful"))
             self.scan_networks()
         else:
-            self.show_toast(f"{t('Connection failed')}: {error_msg.strip()}")
-        # Wichtig: GLib Callback muss False zurückgeben, um zu stoppen
-        return False 
+            self.show_toast(f"{t('Connection failed')}: {detail.strip()}")
 
     def show_toast(self, message):
         toast = Adw.Toast.new(message)
