@@ -3,6 +3,33 @@ import threading
 from gi.repository import Gtk, Adw, GLib
 from src.lang import t
 
+
+def has_wifi_adapter() -> bool:
+    try:
+        res = subprocess.run(["nmcli", "device"], capture_output=True, text=True, timeout=5)
+        return "wifi" in res.stdout
+    except Exception:
+        return False
+
+
+def get_active_wifi_connection() -> str | None:
+    """SSID of the currently connected network, or None if not connected.
+
+    Reads the device table instead of `device wifi list` so it never triggers
+    a rescan — callers use this for a passive status read.
+    """
+    try:
+        cmd = ["nmcli", "-t", "-f", "TYPE,STATE,CONNECTION", "device", "status"]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        for line in res.stdout.splitlines():
+            parts = line.split(":")
+            if len(parts) >= 3 and parts[0] == "wifi" and parts[1] == "connected":
+                return parts[2]
+    except Exception:
+        pass
+    return None
+
+
 class WifiPage(Gtk.Box):
     def __init__(self, main_window, **kwargs):
         super().__init__(**kwargs)
@@ -14,7 +41,7 @@ class WifiPage(Gtk.Box):
         self.set_margin_start(12)
         self.set_margin_end(12)
 
-        if not self.check_wifi_adapter():
+        if not has_wifi_adapter():
             status_page = Adw.StatusPage()
             status_page.set_icon_name("network-wireless-disabled-symbolic")
             status_page.set_title(t("No Wi-Fi adapter found."))
@@ -47,13 +74,6 @@ class WifiPage(Gtk.Box):
         self.append(self.spinner)
 
         self.scan_networks()
-
-    def check_wifi_adapter(self):
-        try:
-            res = subprocess.run(["nmcli", "device"], capture_output=True, text=True, timeout=5)
-            return "wifi" in res.stdout
-        except Exception:
-            return False
 
     def on_scan_clicked(self, btn):
         self.scan_networks()
