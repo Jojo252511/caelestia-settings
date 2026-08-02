@@ -35,6 +35,15 @@ RULES_CONFIG_FILE="$HYPR_INCLUDES_DIR/rules.conf"
 KEYBINDS_CONFIG_FILE="$HYPR_INCLUDES_DIR/keybinds.conf"
 
 # --- 2. Confirm ---
+# Optional first positional argument: PID of the running app (passed by the
+# About page's Uninstall button, same convention as app_update.sh), so the
+# app can be stopped before its own files are removed. Not present when run
+# manually from a terminal.
+APP_PID=""
+if [[ "$1" =~ ^[0-9]+$ ]]; then
+    APP_PID="$1"
+fi
+
 SKIP_CONFIRM=false
 for arg in "$@"; do
     case "$arg" in
@@ -55,6 +64,14 @@ if [ "$SKIP_CONFIRM" = false ]; then
         [yY][eE][sS]|[yY]) ;;
         *) echo "Aborted."; exit 0 ;;
     esac
+    echo
+fi
+
+if [ -n "$APP_PID" ]; then
+    echo ">>> Stopping running app (PID: $APP_PID)..."
+    kill "$APP_PID" 2>/dev/null || true
+    sleep 1
+    echo "   ...App stopped."
     echo
 fi
 
@@ -152,3 +169,6 @@ echo "  - The rules.conf/monitors.conf 'source' lines and Polkit autostart line 
 echo "    $HYPR_CONFIG_FILE"
 echo
 echo "Run 'hyprctl reload' or restart Hyprland to apply the config changes."
+echo
+echo "Press Enter to close."
+read -r

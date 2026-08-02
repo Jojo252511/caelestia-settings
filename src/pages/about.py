@@ -17,7 +17,8 @@ class AboutPage(Gtk.Box):
 
         manifest_path = APP_DATA_DIR / "manifest.json"
         self.update_script = APP_DATA_DIR / "app_update.sh"
-        
+        self.uninstall_script = APP_DATA_DIR / "uninstall.sh"
+
         info = {"name": "Caelestia", "version": "?", "author": "?", "beschreibung": t("Manifest missing")}
 
         try:
@@ -51,17 +52,39 @@ class AboutPage(Gtk.Box):
         update_row.add_suffix(update_btn)
         update_group.add(update_row)
 
+        uninstall_row = Adw.ActionRow(title=t("Uninstall App"), subtitle=t("Removes the app and its Hyprland integration..."))
+        uninstall_btn = Gtk.Button(label=t("Uninstall"))
+        uninstall_btn.add_css_class("destructive-action")
+        uninstall_btn.connect("clicked", self.on_uninstall_clicked)
+
+        uninstall_row.add_suffix(uninstall_btn)
+        update_group.add(uninstall_row)
+
     def on_update_clicked(self, button):
         if not self.update_script.exists():
             print(f"ERR: Script missing: {self.update_script}")
             return
-        
+
         # Holen der eigenen Prozess-ID (PID)
         my_pid = str(os.getpid())
         print(f"Starte Update-Prozess (übergebe PID: {my_pid})...")
-        
-        try: 
+
+        try:
             # Wir übergeben die PID als Argument an das Skript
             # Kitty Syntax: kitty [options] program [arguments...]
             subprocess.Popen(["kitty", str(self.update_script), my_pid])
+        except Exception as e: print(f"Err: {e}")
+
+    def on_uninstall_clicked(self, button):
+        if not self.uninstall_script.exists():
+            print(f"ERR: Script missing: {self.uninstall_script}")
+            return
+
+        # uninstall.sh does its own [y/N] confirmation inside the kitty
+        # terminal, same as app_update.sh — no separate GTK confirm dialog.
+        my_pid = str(os.getpid())
+        print(f"Starte Uninstall-Prozess (übergebe PID: {my_pid})...")
+
+        try:
+            subprocess.Popen(["kitty", str(self.uninstall_script), my_pid])
         except Exception as e: print(f"Err: {e}")
