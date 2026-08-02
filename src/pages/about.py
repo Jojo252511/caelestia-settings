@@ -8,6 +8,7 @@ from src.lang import t
 class AboutPage(Gtk.Box):
     def __init__(self, main_window, **kwargs):
         super().__init__(**kwargs)
+        self.win = main_window
         self.set_orientation(Gtk.Orientation.VERTICAL)
         self.set_spacing(12)
         self.set_margin_top(12)
@@ -80,11 +81,15 @@ class AboutPage(Gtk.Box):
             print(f"ERR: Script missing: {self.uninstall_script}")
             return
 
-        # uninstall.sh does its own [y/N] confirmation inside the kitty
-        # terminal, same as app_update.sh — no separate GTK confirm dialog.
+        # uninstall.sh still does its own [y/N] confirmation inside the
+        # kitty terminal (so a mis-click there can still be aborted), but the
+        # app itself quits immediately rather than waiting around for that —
+        # otherwise it sits there, still open, until the user answers.
         my_pid = str(os.getpid())
         print(f"Starte Uninstall-Prozess (übergebe PID: {my_pid})...")
 
         try:
             subprocess.Popen(["kitty", str(self.uninstall_script), my_pid])
         except Exception as e: print(f"Err: {e}")
+
+        self.win.get_application().quit()
