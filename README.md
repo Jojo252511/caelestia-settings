@@ -125,6 +125,19 @@ The installer will:
 - Add a `.desktop` entry to the app menu
 - Add window rules and a `Super+I` keybind to your Hyprland config
 
+### Uninstall
+
+```bash
+./uninstall.sh
+```
+
+Removes the installed app, the `caelestia-settings` command, the `.desktop` entry, the
+app's window rules, and the `Super+I` keybind. Asks before removing your saved settings
+(`~/.config/caelestia-settings/`). Leaves installed packages, the `~/.local/bin` PATH
+setup, and shared Hyprland config lines (rules.conf/monitors.conf sourcing, Polkit
+autostart) untouched, since those aren't exclusive to this app. Pass `-y` to skip the
+confirmation prompt.
+
 ### Run without installing
 
 `caelestia_core` is a hard dependency — build it into your environment first. Use `--system-site-packages` so the venv can also see the system `python-gobject` (PyGI) install; a plain venv won't have it and `python main.py` will fail with `ModuleNotFoundError: No module named 'gi'`. Activate the venv (rather than calling `.venv/bin/maturin` by path) so `maturin develop` reliably targets it instead of some other `.venv` it might auto-detect elsewhere:
@@ -162,6 +175,7 @@ bind = SUPER, I, exec, caelestia-settings
 caelestia-settings/
 ├── main.py                   # App entry point
 ├── install.sh                # Installer
+├── uninstall.sh              # Uninstaller
 ├── app_update.sh             # Self-updater (called by the About page)
 ├── manifest.json             # Version info
 ├── ruff.toml                 # Python linter configuration

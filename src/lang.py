@@ -215,6 +215,9 @@ TRANSLATIONS = {
     "App Management": "App-Verwaltung",
     "Downloads latest version...": "Lädt die neueste Version von Git...",
     "Check for Updates": "Update prüfen",
+    "Uninstall App": "App deinstallieren",
+    "Removes the app and its Hyprland integration...": "Entfernt die App und ihre Hyprland-Integration...",
+    "Uninstall": "Deinstallieren",
     "Manifest missing": "Manifest fehlt",
 }
 
