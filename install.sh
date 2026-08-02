@@ -14,6 +14,7 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 MAIN_APP_SRC="$SCRIPT_DIR/main.py"
 SRC_FOLDER="$SCRIPT_DIR/src"
 UPDATE_SCRIPT_SRC="$SCRIPT_DIR/app_update.sh"
+UNINSTALL_SCRIPT_SRC="$SCRIPT_DIR/uninstall.sh"
 MANIFEST_SRC="$SCRIPT_DIR/manifest.json"
 
 if [ ! -f "$MAIN_APP_SRC" ] || [ ! -d "$SRC_FOLDER" ]; then
@@ -101,6 +102,15 @@ if [ -f "$UPDATE_SCRIPT_SRC" ]; then
     chmod +x "$APP_DATA_DIR/app_update.sh"
 else
     echo "WARNING: 'app_update.sh' not found. The update function will not be available."
+fi
+
+# Copy uninstall script
+if [ -f "$UNINSTALL_SCRIPT_SRC" ]; then
+    echo "   ...Copying 'uninstall.sh' to $APP_DATA_DIR"
+    cp "$UNINSTALL_SCRIPT_SRC" "$APP_DATA_DIR/"
+    chmod +x "$APP_DATA_DIR/uninstall.sh"
+else
+    echo "WARNING: 'uninstall.sh' not found. The in-app uninstall button will not be available."
 fi
 
 # Copy manifest
