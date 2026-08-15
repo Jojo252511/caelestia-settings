@@ -171,6 +171,24 @@ TRANSLATIONS = {
     "Workspace configuration": "Workspace-Konfiguration",
     "Wallpaper / autostart": "Hintergrundbild / Autostart",
     "Execs / primary monitor": "Execs / Hauptmonitor",
+    "Another manually written primary-monitor exec entry exists outside the "
+    "app-managed block; resolve the conflict manually before saving.": (
+        "Außerhalb des app-eigenen Blocks existiert bereits ein manuell geschriebener "
+        "Hauptmonitor-Exec-Eintrag; lösen Sie den Konflikt manuell auf, bevor Sie speichern."
+    ),
+    "Another manually written video-wallpaper autostart entry exists outside "
+    "the app-managed block; resolve the conflict manually before saving.": (
+        "Außerhalb des app-eigenen Blocks existiert bereits ein manuell geschriebener "
+        "Video-Hintergrundbild-Autostart-Eintrag; lösen Sie den Konflikt manuell auf, "
+        "bevor Sie speichern."
+    ),
+    "xrandr was not found; the primary monitor change was not applied live.": (
+        "xrandr wurde nicht gefunden; die Hauptmonitor-Änderung wurde nicht live angewendet."
+    ),
+    "Overridden by another manual autostart entry — effective state undetermined": (
+        "Durch einen anderen manuellen Autostart-Eintrag überschrieben — "
+        "effektiver Zustand unbestimmt"
+    ),
     "Lua compiler (luac) is required; changes were not applied.": (
         "Der Lua-Compiler (luac) ist erforderlich; Änderungen wurden nicht übernommen."
     ),

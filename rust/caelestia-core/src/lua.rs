@@ -496,6 +496,29 @@ impl Parser {
         self.expect(&Token::RParen)?;
         Ok(LuaCall { path, args })
     }
+
+    /// Consumes exactly `Token::Ident(name)`, or fails — used by the
+    /// strict autostart-shape parser, which (unlike `parse_call`'s
+    /// generic dotted-path loop) expects specific keywords/identifiers
+    /// at specific positions.
+    fn expect_ident(&mut self, name: &str) -> Result<(), LuaError> {
+        match self.advance() {
+            Some(Token::Ident(ref found)) if found == name => Ok(()),
+            other => Err(LuaError(format!(
+                "expected identifier {name:?}, found {other:?}"
+            ))),
+        }
+    }
+
+    /// Consumes exactly `Token::Str(_)` and returns its contents, or fails.
+    fn expect_str(&mut self) -> Result<String, LuaError> {
+        match self.advance() {
+            Some(Token::Str(s)) => Ok(s),
+            other => Err(LuaError(format!(
+                "expected a string literal, found {other:?}"
+            ))),
+        }
+    }
 }
 
 /// Parses a single Lua value (typically a table literal) from `input`.
@@ -689,52 +712,223 @@ pub fn render_call(path: &[&str], args: &[LuaValue]) -> String {
 //   end)
 //
 // A `function() ... end` body is a Lua *statement sequence*, which this
-// codec deliberately does not model as a `LuaValue` (see the module
-// doc comment: no loops, function bodies, or local declarations). Rather
-// than widen the value model for this one call site, the app's autostart
-// entries — always exactly zero or one shell command per managed block —
-// get a dedicated, narrow render/parse pair instead, built entirely out
-// of the existing call primitives: `render_call` for the inner
-// `hl.exec_cmd(...)` (all string-escaping stays in this module), and
-// `find_calls`/`parse_call` for reading it back, exactly like any other
-// caller that tolerates unmodeled surrounding Lua as filler.
+// codec deliberately does not model as a general `LuaValue` (see the
+// module doc comment: no loops, function bodies, or local declarations).
+// The app's own autostart entries are always exactly this one fixed
+// shape — one event registration, one `hl.exec_cmd` call, nothing else —
+// so `parse_autostart_cmd` below is a dedicated STRICT parser for
+// exactly that shape, not a lenient scan: unlike `find_calls`, it does
+// NOT tolerate a different event name, extra statements in the handler
+// body, or any other surrounding Lua. That strictness is deliberate and
+// security-relevant — this parser is what decides whether a config
+// entry is treated as "this app's own persisted value" for read-back and
+// live-apply decisions, so it must never mistake a *different* event
+// handler (e.g. `window.open`) or a handler with extra/altered
+// statements for the app's own trusted `hyprland.start` entry.
 
 /// Renders the app's single-command autostart idiom: an `hl.on(...)`
 /// registration whose callback body is exactly one `hl.exec_cmd(cmd)`
 /// call. `cmd` is a raw shell command string (the app is responsible for
 /// its own shell-level quoting, e.g. `shlex.quote` on each argument,
 /// before it ever reaches here) — this function only guarantees the
-/// *Lua* string-literal escaping of that command.
-pub fn render_autostart_cmd(cmd: &str) -> String {
-    format!(
+/// *Lua* string-literal escaping of that command. Rejects an empty or
+/// whitespace-only `cmd`: an autostart entry with nothing to run is
+/// meaningless and almost certainly a caller bug, not something that
+/// should silently round-trip as a "valid" empty entry.
+pub fn render_autostart_cmd(cmd: &str) -> Result<String, LuaError> {
+    if cmd.trim().is_empty() {
+        return Err(LuaError(
+            "autostart command must not be empty or whitespace-only".into(),
+        ));
+    }
+    Ok(format!(
         "hl.on(\"hyprland.start\", function() {} end)",
         render_call(&["hl", "exec_cmd"], &[LuaValue::Str(cmd.to_string())])
-    )
+    ))
 }
 
-/// Parses a single autostart entry rendered by [`render_autostart_cmd`],
-/// returning the inner command string. Locates the `hl.exec_cmd(...)`
-/// call anywhere in `input` via [`find_calls`] (tolerating the
-/// `hl.on("hyprland.start", function() ... end)` wrapper, and any other
-/// surrounding Lua, as unmodeled filler) and requires there be exactly
-/// one such call with exactly one string argument. Zero matches, more
-/// than one match, or a non-string/multi-argument call are all errors —
-/// callers should treat this exactly like any other `LuaError`: fall back
-/// to "unrecognized content" rather than guessing at a partial result.
+/// Strictly parses a single autostart entry, accepting ONLY the exact
+/// shape rendered by [`render_autostart_cmd`]:
+///
+///   hl.on("hyprland.start", function() hl.exec_cmd("<cmd>") end)
+///
+/// Every token in `input` must match this shape in order — a different
+/// event name, a different handler body (extra statements, a different
+/// call, no call at all), trailing/leading content, or any syntax this
+/// codec's strict lexer doesn't recognize anywhere in `input` is a hard
+/// `LuaError`. This deliberately does NOT tolerate unrelated surrounding
+/// Lua the way `find_calls` does: callers use this to decide whether a
+/// config entry IS the app's own managed value, so a lookalike wrapping
+/// a different event, or extra statements smuggled into the handler
+/// body, must fail closed rather than be silently accepted. Also rejects
+/// an empty/whitespace-only command, mirroring `render_autostart_cmd`.
 pub fn parse_autostart_cmd(input: &str) -> Result<String, LuaError> {
-    let calls = find_calls(input, "hl.exec_cmd");
-    if calls.len() != 1 {
+    let tokens = Lexer::new(input).tokenize()?;
+    let mut p = Parser { tokens, pos: 0 };
+
+    p.expect_ident("hl")?;
+    p.expect(&Token::Dot)?;
+    p.expect_ident("on")?;
+    p.expect(&Token::LParen)?;
+    let event = p.expect_str()?;
+    if event != "hyprland.start" {
         return Err(LuaError(format!(
-            "expected exactly one hl.exec_cmd(...) call, found {}",
-            calls.len()
+            "expected the \"hyprland.start\" autostart event, found {event:?}"
         )));
     }
-    let call = parse_call(calls[0].2)?;
-    match call.args.as_slice() {
-        [LuaValue::Str(cmd)] => Ok(cmd.clone()),
-        _ => Err(LuaError(
-            "hl.exec_cmd(...) must take exactly one string argument".into(),
-        )),
+    p.expect(&Token::Comma)?;
+    p.expect_ident("function")?;
+    p.expect(&Token::LParen)?;
+    p.expect(&Token::RParen)?;
+    p.expect_ident("hl")?;
+    p.expect(&Token::Dot)?;
+    p.expect_ident("exec_cmd")?;
+    p.expect(&Token::LParen)?;
+    let cmd = p.expect_str()?;
+    p.expect(&Token::RParen)?;
+    p.expect_ident("end")?;
+    p.expect(&Token::RParen)?;
+
+    if p.pos != p.tokens.len() {
+        return Err(LuaError(
+            "unexpected trailing content after autostart entry".into(),
+        ));
+    }
+    if cmd.trim().is_empty() {
+        return Err(LuaError(
+            "autostart command must not be empty or whitespace-only".into(),
+        ));
+    }
+    Ok(cmd)
+}
+
+// ---------------------------------------------------------------------
+// Primary-monitor xrandr command: strict validation
+// ---------------------------------------------------------------------
+//
+// Not a Lua construct — this validates a plain shell command string
+// (the payload of an `hl.exec_cmd(...)` / legacy `exec-once = ...`
+// entry) — but it lives here, next to the autostart-cmd validation it's
+// always paired with, and uses a small POSIX-subset shell tokenizer
+// rather than a substring/heuristic check, per the same "fail closed on
+// anything not exactly the app's own shape" principle as
+// `parse_autostart_cmd` above.
+
+/// Splits `s` into shell words, honoring single quotes (literal
+/// contents, no escapes), double quotes (backslash escapes `\`, `"`,
+/// `$`, `` ` ``), and backslash escapes outside quotes — the POSIX
+/// subset Python's `shlex.split(s, posix=True)` implements. Returns
+/// `Err` on an unterminated quote or a trailing backslash, exactly like
+/// `shlex.split` raises `ValueError` in those cases.
+fn shell_split(s: &str) -> Result<Vec<String>, LuaError> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut current));
+                    in_word = false;
+                }
+            }
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(c) => current.push(c),
+                        None => return Err(LuaError("unterminated single quote".into())),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') => match chars.next() {
+                            Some(c @ ('\\' | '"' | '$' | '`')) => current.push(c),
+                            Some(c) => {
+                                current.push('\\');
+                                current.push(c);
+                            }
+                            None => {
+                                return Err(LuaError("unterminated escape in double quote".into()));
+                            }
+                        },
+                        Some(c) => current.push(c),
+                        None => return Err(LuaError("unterminated double quote".into())),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                match chars.next() {
+                    Some(c) => current.push(c),
+                    None => return Err(LuaError("trailing backslash".into())),
+                }
+            }
+            c => {
+                in_word = true;
+                current.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(current);
+    }
+    Ok(words)
+}
+
+/// Shell-quotes `s` the way `shlex.quote` does: bare when it contains
+/// only characters that never need quoting, single-quoted (with `'`
+/// escaped as `'\''`) otherwise.
+fn shell_quote(s: &str) -> String {
+    let safe = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'));
+    if safe {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
+/// Renders the app's own primary-monitor xrandr command deterministically
+/// from a validated, non-empty monitor `name`, shell-quoting it. Rejects
+/// an empty/whitespace-only name.
+pub fn render_xrandr_primary_cmd(name: &str) -> Result<String, LuaError> {
+    if name.trim().is_empty() {
+        return Err(LuaError("monitor name must not be empty".into()));
+    }
+    Ok(format!("xrandr --output {} --primary", shell_quote(name)))
+}
+
+/// Strictly validates that `cmd` is EXACTLY the app's own primary-monitor
+/// command — the four-token sequence `xrandr --output <name> --primary`
+/// and nothing else: no extra/missing/reordered/duplicated options, no
+/// additional shell commands or operators (shell_split only tokenizes
+/// quoting, it never interprets `;`/`&&`/`|`, so e.g. `xrandr --output
+/// DP-1 --primary; rm -rf ~` tokenizes to more than 4 words and is
+/// rejected by the length match below), no empty name, and no other
+/// program in place of `xrandr` (e.g. `echo --output DP-1 --primary`).
+/// Returns the monitor name on success.
+pub fn parse_xrandr_primary_cmd(cmd: &str) -> Result<String, LuaError> {
+    let tokens = shell_split(cmd)?;
+    match tokens.as_slice() {
+        [prog, output_flag, name, primary_flag]
+            if prog == "xrandr" && output_flag == "--output" && primary_flag == "--primary" =>
+        {
+            if name.trim().is_empty() {
+                return Err(LuaError("monitor name must not be empty".into()));
+            }
+            Ok(name.clone())
+        }
+        _ => Err(LuaError(format!(
+            "expected exactly \"xrandr --output <name> --primary\", found {cmd:?}"
+        ))),
     }
 }
 
@@ -1098,7 +1292,7 @@ hl.window_rule({ match = { class = "kitty" }, workspace = "2" })
 
     #[test]
     fn renders_autostart_cmd_golden() {
-        let rendered = render_autostart_cmd("mpvpaper '*' /home/user/video.mp4");
+        let rendered = render_autostart_cmd("mpvpaper '*' /home/user/video.mp4").unwrap();
         assert_eq!(
             rendered,
             r#"hl.on("hyprland.start", function() hl.exec_cmd("mpvpaper '*' /home/user/video.mp4") end)"#
@@ -1114,7 +1308,7 @@ hl.window_rule({ match = { class = "kitty" }, workspace = "2" })
             "path with spaces/and/'quotes'/and 日本語 ✨",
         ];
         for cmd in cases {
-            let rendered = render_autostart_cmd(cmd);
+            let rendered = render_autostart_cmd(cmd).unwrap();
             let parsed = parse_autostart_cmd(&rendered).unwrap();
             assert_eq!(parsed, cmd, "roundtrip mismatch for {cmd:?}");
         }
@@ -1122,40 +1316,192 @@ hl.window_rule({ match = { class = "kitty" }, workspace = "2" })
 
     #[test]
     fn autostart_cmd_parses_within_surrounding_whitespace_and_comments() {
+        // A leading comment / trailing newline are just whitespace to the
+        // strict lexer (comments are always skipped, in strict mode too)
+        // — this is NOT the old lenient "tolerates arbitrary surrounding
+        // Lua" behavior, which parse_autostart_cmd no longer has.
         let src =
-            "-- autostart\nhl.on(\"hyprland.start\", function()\n  hl.exec_cmd(\"waybar\")\nend)\n";
+            "-- autostart\nhl.on(\"hyprland.start\", function() hl.exec_cmd(\"waybar\") end)\n";
         assert_eq!(parse_autostart_cmd(src).unwrap(), "waybar");
     }
 
     #[test]
-    fn autostart_cmd_rejects_zero_calls() {
+    fn autostart_cmd_rejects_empty_and_unrelated_input() {
         assert!(parse_autostart_cmd("").is_err());
         assert!(parse_autostart_cmd("local x = 1").is_err());
+        assert!(parse_autostart_cmd("hl.exec_cmd(\"a\")").is_err());
+    }
+
+    #[test]
+    fn autostart_cmd_rejects_empty_function_body() {
         assert!(parse_autostart_cmd("hl.on(\"hyprland.start\", function() end)").is_err());
     }
 
     #[test]
-    fn autostart_cmd_rejects_multiple_calls() {
-        let src = r#"hl.exec_cmd("a")
-hl.exec_cmd("b")"#;
+    fn autostart_cmd_rejects_multiple_statements_in_body() {
+        let src = r#"hl.on("hyprland.start", function() hl.exec_cmd("a") hl.exec_cmd("b") end)"#;
         assert!(parse_autostart_cmd(src).is_err());
     }
 
     #[test]
-    fn autostart_cmd_rejects_non_string_argument() {
-        assert!(parse_autostart_cmd("hl.exec_cmd(true)").is_err());
-        assert!(parse_autostart_cmd("hl.exec_cmd(42)").is_err());
+    fn autostart_cmd_rejects_non_string_or_extra_arguments() {
+        assert!(
+            parse_autostart_cmd(r#"hl.on("hyprland.start", function() hl.exec_cmd(true) end)"#)
+                .is_err()
+        );
+        assert!(
+            parse_autostart_cmd(r#"hl.on("hyprland.start", function() hl.exec_cmd("a", "b") end)"#)
+                .is_err()
+        );
     }
 
     #[test]
-    fn autostart_cmd_rejects_extra_arguments() {
-        assert!(parse_autostart_cmd(r#"hl.exec_cmd("a", { workspace = "2" })"#).is_err());
+    fn autostart_cmd_rejects_wrong_event_name() {
+        let src = r#"hl.on("window.open", function() hl.exec_cmd("waybar") end)"#;
+        assert!(parse_autostart_cmd(src).is_err());
     }
 
     #[test]
-    fn autostart_cmd_handles_empty_string_command() {
-        let rendered = render_autostart_cmd("");
-        assert_eq!(parse_autostart_cmd(&rendered).unwrap(), "");
+    fn autostart_cmd_rejects_wrong_handler_call() {
+        // Same wrapper shape, but the statement inside isn't hl.exec_cmd.
+        let src = r#"hl.on("hyprland.start", function() hl.other_call("x") end)"#;
+        assert!(parse_autostart_cmd(src).is_err());
+    }
+
+    #[test]
+    fn autostart_cmd_rejects_trailing_content_after_valid_entry() {
+        let src = r#"hl.on("hyprland.start", function() hl.exec_cmd("a") end) hl.reload()"#;
+        assert!(parse_autostart_cmd(src).is_err());
+    }
+
+    #[test]
+    fn render_autostart_cmd_rejects_empty_or_whitespace_command() {
+        assert!(render_autostart_cmd("").is_err());
+        assert!(render_autostart_cmd("   ").is_err());
+        assert!(render_autostart_cmd("\t\n").is_err());
+    }
+
+    #[test]
+    fn parse_autostart_cmd_rejects_empty_or_whitespace_command_even_if_well_formed() {
+        // A corrupted/hand-edited file could still contain this exact
+        // shape with an empty string payload — reject it on the parse
+        // side too, matching the render side's invariant.
+        assert!(
+            parse_autostart_cmd(r#"hl.on("hyprland.start", function() hl.exec_cmd("") end)"#)
+                .is_err()
+        );
+        assert!(
+            parse_autostart_cmd(r#"hl.on("hyprland.start", function() hl.exec_cmd("   ") end)"#)
+                .is_err()
+        );
+    }
+
+    // ── primary-monitor xrandr command ───────────────────────────────────
+
+    #[test]
+    fn shell_split_handles_quotes_and_escapes() {
+        assert_eq!(shell_split("a b c").unwrap(), vec!["a", "b", "c"]);
+        assert_eq!(
+            shell_split("xrandr --output 'My Monitor' --primary").unwrap(),
+            vec!["xrandr", "--output", "My Monitor", "--primary"]
+        );
+        assert_eq!(shell_split(r#"a "b c" d"#).unwrap(), vec!["a", "b c", "d"]);
+        assert_eq!(shell_split(r"a\ b").unwrap(), vec!["a b"]);
+    }
+
+    #[test]
+    fn shell_split_rejects_unterminated_quotes_and_trailing_backslash() {
+        assert!(shell_split("a 'unterminated").is_err());
+        assert!(shell_split("a \"unterminated").is_err());
+        assert!(shell_split(r"a\").is_err());
+    }
+
+    #[test]
+    fn shell_split_does_not_interpret_shell_operators() {
+        // ';', '&&', '|' are just ordinary word characters to this
+        // tokenizer — it never runs a shell, so it can't be tricked into
+        // treating them as command separators; they simply become part
+        // of (or extra) tokens, which callers like
+        // parse_xrandr_primary_cmd then reject via the exact-length match.
+        let tokens = shell_split("xrandr --output DP-1 --primary; rm -rf ~").unwrap();
+        assert_eq!(
+            tokens,
+            vec!["xrandr", "--output", "DP-1", "--primary;", "rm", "-rf", "~"]
+        );
+    }
+
+    #[test]
+    fn render_xrandr_primary_cmd_golden() {
+        assert_eq!(
+            render_xrandr_primary_cmd("DP-1").unwrap(),
+            "xrandr --output DP-1 --primary"
+        );
+    }
+
+    #[test]
+    fn render_xrandr_primary_cmd_quotes_dangerous_names() {
+        let rendered = render_xrandr_primary_cmd("a b'c").unwrap();
+        assert_eq!(shell_split(&rendered).unwrap()[2], "a b'c");
+    }
+
+    #[test]
+    fn render_xrandr_primary_cmd_rejects_empty_name() {
+        assert!(render_xrandr_primary_cmd("").is_err());
+        assert!(render_xrandr_primary_cmd("   ").is_err());
+    }
+
+    #[test]
+    fn xrandr_primary_cmd_roundtrips() {
+        for name in ["DP-1", "HDMI-A-1", "a b'c", "日本語monitor"] {
+            let rendered = render_xrandr_primary_cmd(name).unwrap();
+            assert_eq!(parse_xrandr_primary_cmd(&rendered).unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn parse_xrandr_primary_cmd_accepts_exact_shape_only() {
+        assert_eq!(
+            parse_xrandr_primary_cmd("xrandr --output DP-1 --primary").unwrap(),
+            "DP-1"
+        );
+    }
+
+    #[test]
+    fn parse_xrandr_primary_cmd_rejects_wrong_program() {
+        assert!(parse_xrandr_primary_cmd("echo --output DP-1 --primary").is_err());
+    }
+
+    #[test]
+    fn parse_xrandr_primary_cmd_rejects_missing_primary_flag() {
+        assert!(parse_xrandr_primary_cmd("xrandr --output DP-1").is_err());
+    }
+
+    #[test]
+    fn parse_xrandr_primary_cmd_rejects_extra_or_reordered_tokens() {
+        assert!(parse_xrandr_primary_cmd("xrandr --primary --output DP-1").is_err());
+        assert!(parse_xrandr_primary_cmd("xrandr --output DP-1 --primary --auto").is_err());
+        assert!(parse_xrandr_primary_cmd("xrandr --output DP-1 --primary --primary").is_err());
+    }
+
+    #[test]
+    fn parse_xrandr_primary_cmd_rejects_multiple_commands_or_operators() {
+        assert!(parse_xrandr_primary_cmd("xrandr --output DP-1 --primary; rm -rf ~").is_err());
+        assert!(
+            parse_xrandr_primary_cmd(
+                "xrandr --output DP-1 --primary && xrandr --output DP-2 --primary"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parse_xrandr_primary_cmd_rejects_empty_monitor_name() {
+        assert!(parse_xrandr_primary_cmd("xrandr --output '' --primary").is_err());
+    }
+
+    #[test]
+    fn parse_xrandr_primary_cmd_rejects_dynamic_or_unparseable_command() {
+        assert!(parse_xrandr_primary_cmd("xrandr --output 'unterminated --primary").is_err());
     }
 
     #[test]

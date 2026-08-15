@@ -7,7 +7,12 @@ from pathlib import Path
 import caelestia_core
 from src.hypr_provider import (
     ConfigCapability,
+    ManagedBlockError,
     Provider,
+    find_competing_lua_autostart_entries,
+    find_lines_outside_managed_blocks,
+    read_managed_legacy_block,
+    read_managed_lua_block,
     resolve_path,
     require_config_capability,
     write_managed_legacy_block_and_reload,
@@ -60,14 +65,92 @@ def _mpvpaper_shell_cmd(video_path: Path) -> str:
     return f"mpvpaper '*' {shlex.quote(str(video_path))} -o {shlex.quote(_MPVPAPER_ARGS)}"
 
 
+def _validate_media_path(path: Path, extensions: set[str], label: str) -> Path:
+    """Strict, side-effect-free validation for a wallpaper/video path,
+    run before ANY writer/lock/backup/process/PID/UI side effect.
+    Rejects: anything that isn't already a `pathlib.Path` (never accepts
+    a bare string, even one that "looks like" a path), a relative path, a
+    filename starting with `-` (could be misread as an option by a
+    program this app invokes with no shell involved, e.g.
+    mpvpaper/caelestia — argv-level option injection, not just shell
+    injection), anything that isn't an existing regular file, and an
+    extension that doesn't match the requested media type."""
+    if not isinstance(path, Path):
+        raise ValueError(f"{label} path must be a pathlib.Path, got {type(path).__name__}")
+    if not path.is_absolute():
+        raise ValueError(f"{label} path must be absolute: {path}")
+    if path.name.startswith("-"):
+        raise ValueError(f"{label} filename must not start with '-': {path.name}")
+    if not path.is_file():
+        raise ValueError(f"{label} path is not an existing regular file: {path}")
+    if path.suffix.lower() not in extensions:
+        raise ValueError(f"{label} path has an unexpected extension: {path.suffix!r}")
+    return path
+
+
+def _competing_wallpaper_autostart_lines(text: str, provider: Provider) -> list[str]:
+    """Foreign (non-app-owned) content elsewhere in execs that plausibly
+    also controls video-wallpaper autostart — see
+    `find_competing_lua_autostart_entries`/`find_lines_outside_managed_blocks`
+    in hypr_provider.py for the detection semantics."""
+    if provider is Provider.LUA:
+        return find_competing_lua_autostart_entries(
+            text, [WALLPAPER_AUTOSTART_BLOCK], lambda cmd: "mpvpaper" in cmd
+        )
+    return [
+        line
+        for line in find_lines_outside_managed_blocks(text, [WALLPAPER_AUTOSTART_BLOCK], "#")
+        if line.strip().startswith("exec-once") and "mpvpaper" in line
+    ]
+
+
+def _raise_if_competing_wallpaper_autostart(text: str, provider: Provider) -> None:
+    if _competing_wallpaper_autostart_lines(text, provider):
+        raise ManagedBlockError(
+            t(
+                "Another manually written video-wallpaper autostart entry exists outside "
+                "the app-managed block; resolve the conflict manually before saving."
+            )
+        )
+
+
+def _read_wallpaper_autostart_lines(provider: Provider) -> list[str]:
+    """Snapshots the app's own currently persisted autostart lines —
+    used to restore them verbatim if a live-apply step fails after a new
+    value was already successfully persisted."""
+    path = resolve_path("execs", provider)
+    if provider is Provider.LUA:
+        return read_managed_lua_block(path, WALLPAPER_AUTOSTART_BLOCK)
+    return read_managed_legacy_block(path, WALLPAPER_AUTOSTART_BLOCK)
+
+
+def _restore_wallpaper_autostart_lines(provider: Provider, lines: list[str]) -> None:
+    """Writes `lines` back verbatim, bypassing `_write_mpvpaper_autostart`
+    (and its competing-content guard, which must never block a rollback)
+    — used only to restore a previous snapshot after a live-apply
+    failure. Still goes through the hardened writer, so a foreign change
+    made in the meantime still safely aborts this restore rather than
+    being clobbered."""
+    path = resolve_path("execs", provider)
+    if provider is Provider.LUA:
+        write_managed_lua_block_and_reload(path, WALLPAPER_AUTOSTART_BLOCK, lines)
+    else:
+        write_managed_legacy_block_and_reload(path, WALLPAPER_AUTOSTART_BLOCK, lines)
+
+
 def _write_mpvpaper_autostart(video_path: Path | None):
     """Persists (or clears, when `video_path` is None) the app-owned
     video-wallpaper autostart entry under the currently active provider.
     Only ever touches the "wallpaper-autostart" managed block — manually
     written execs content, and the app's own separate "primary-monitor"
-    block, are always left untouched."""
+    block, are always left untouched. Fails closed (no write at all) if
+    another manually written entry outside the app-managed block also
+    plausibly controls video-wallpaper autostart."""
     provider = require_config_capability(ConfigCapability.WALLPAPER_AUTOSTART)
     path = resolve_path("execs", provider)
+
+    def pre_write_check(text: str) -> None:
+        _raise_if_competing_wallpaper_autostart(text, provider)
 
     if provider is Provider.LUA:
         lines = (
@@ -75,7 +158,9 @@ def _write_mpvpaper_autostart(video_path: Path | None):
             if video_path is not None
             else []
         )
-        write_managed_lua_block_and_reload(path, WALLPAPER_AUTOSTART_BLOCK, lines)
+        write_managed_lua_block_and_reload(
+            path, WALLPAPER_AUTOSTART_BLOCK, lines, pre_write_check=pre_write_check
+        )
         return
 
     lines = (
@@ -88,6 +173,7 @@ def _write_mpvpaper_autostart(video_path: Path | None):
         WALLPAPER_AUTOSTART_BLOCK,
         lines,
         legacy_predicate=lambda line: _MPVPAPER_MARKER in line,
+        pre_write_check=pre_write_check,
     )
 
 
@@ -532,7 +618,6 @@ class WallpaperPage(Gtk.Box):
     def _run_wallpaper_action(self, action, *, missing_program_message: str | None = None):
         """Run a live wallpaper action only while its capability is available."""
         try:
-            require_config_capability(ConfigCapability.WALLPAPER_AUTOSTART)
             action()
         except FileNotFoundError:
             message = missing_program_message or t("Required wallpaper program not found.")
@@ -540,11 +625,66 @@ class WallpaperPage(Gtk.Box):
         except Exception as e:
             self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
 
+    def _apply_wallpaper_change(self, *, new_autostart_video: Path | None, live_apply):
+        """Persists `new_autostart_video` as the app's autostart entry
+        FIRST — before any live process is stopped/started or any PID
+        file touched — so a persistence failure (capability, competing
+        content, luac, reload, ...) never has any live side effect at
+        all. Only once persistence succeeds does `live_apply()` run. If
+        `live_apply` raises, the just-written config is rolled back to
+        its previous content (and reloaded again), a best-effort attempt
+        is made to restore the previous live video (if any), and the
+        original error is re-raised — the caller must never reach its own
+        success path (UI state update, success toast) after this returns
+        by raising."""
+        provider = require_config_capability(ConfigCapability.WALLPAPER_AUTOSTART)
+        previous_lines = _read_wallpaper_autostart_lines(provider)
+        previous_current = self._current
+        _write_mpvpaper_autostart(new_autostart_video)
+        try:
+            live_apply()
+        except Exception as live_error:
+            try:
+                _restore_wallpaper_autostart_lines(provider, previous_lines)
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    f"{live_error}; additionally, restoring the previous configuration "
+                    f"failed: {rollback_error}"
+                ) from live_error
+            self._restore_live_video(previous_current)
+            raise
+
+    def _restore_live_video(self, previous_current: str) -> None:
+        """Best-effort: re-spawns mpvpaper for the video that was showing
+        before a failed switch already stopped it via `_stop_mpv()`. Never
+        raises — this runs during already-failing error recovery and must
+        not mask the original error with a new one, and must not be
+        mistaken for success (no toast, no `_current`/grid update here)."""
+        if not previous_current:
+            return
+        try:
+            prev_path = Path(previous_current)
+            if prev_path.suffix.lower() not in VIDEO_EXTENSIONS or not prev_path.is_file():
+                return
+            self._mpv_proc = subprocess.Popen(["mpvpaper", "*", str(prev_path), "-o", _MPVPAPER_ARGS])
+            _MPV_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _MPV_PID_FILE.write_text(str(self._mpv_proc.pid))
+        except Exception:
+            pass
+
     def _on_image_selected(self, path: Path):
+        try:
+            path = _validate_media_path(path, IMAGE_EXTENSIONS, "image")
+        except ValueError as e:
+            self.main_window.add_toast(Adw.Toast.new(str(e)))
+            return
+
         def apply_image():
-            self._stop_mpv()
-            subprocess.Popen(["caelestia", "wallpaper", "-f", str(path)])
-            _write_mpvpaper_autostart(None)
+            def live_apply():
+                self._stop_mpv()
+                subprocess.Popen(["caelestia", "wallpaper", "-f", str(path)])
+
+            self._apply_wallpaper_change(new_autostart_video=None, live_apply=live_apply)
             self._current = str(path)
             self._img_grid.mark_current(self._current)
             self._show_banner(f"Wallpaper: {path.name}")
@@ -553,18 +693,26 @@ class WallpaperPage(Gtk.Box):
         self._run_wallpaper_action(apply_image)
 
     def _on_video_selected(self, path: Path):
+        try:
+            path = _validate_media_path(path, VIDEO_EXTENSIONS, "video")
+        except ValueError as e:
+            self.main_window.add_toast(Adw.Toast.new(str(e)))
+            return
+
         def apply_video():
-            self._stop_mpv()
-            self._mpv_proc = subprocess.Popen([
-                "mpvpaper", "*", str(path),
-                "-o", _MPVPAPER_ARGS
-            ])
-            try:
-                _MPV_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-                _MPV_PID_FILE.write_text(str(self._mpv_proc.pid))
-            except Exception:
-                pass
-            _write_mpvpaper_autostart(path)
+            def live_apply():
+                self._stop_mpv()
+                self._mpv_proc = subprocess.Popen([
+                    "mpvpaper", "*", str(path),
+                    "-o", _MPVPAPER_ARGS
+                ])
+                try:
+                    _MPV_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    _MPV_PID_FILE.write_text(str(self._mpv_proc.pid))
+                except Exception:
+                    pass
+
+            self._apply_wallpaper_change(new_autostart_video=path, live_apply=live_apply)
             self._current = str(path)
             self._vid_grid.mark_current(self._current)
             self._show_banner(f"Video-Wallpaper: {path.name}")
@@ -576,7 +724,6 @@ class WallpaperPage(Gtk.Box):
         )
 
     def _stop_mpv(self):
-        require_config_capability(ConfigCapability.WALLPAPER_AUTOSTART)
         if self._mpv_proc is not None:
             if self._mpv_proc.poll() is None:
                 self._mpv_proc.terminate()
@@ -598,9 +745,11 @@ class WallpaperPage(Gtk.Box):
 
     def _on_random(self, _):
         def apply_random():
-            self._stop_mpv()
-            subprocess.Popen(["caelestia", "wallpaper", "-r", str(_get_image_dir())])
-            _write_mpvpaper_autostart(None)
+            def live_apply():
+                self._stop_mpv()
+                subprocess.Popen(["caelestia", "wallpaper", "-r", str(_get_image_dir())])
+
+            self._apply_wallpaper_change(new_autostart_video=None, live_apply=live_apply)
             self._show_banner(t("Random wallpaper set"))
             self.main_window.add_toast(Adw.Toast.new(t("Random wallpaper set")))
 

@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -90,21 +91,18 @@ class AutostartShellCommandSafetyTest(unittest.TestCase):
                 self.assertEqual(caelestia_core.parse_autostart_cmd(rendered), cmd)
 
     def test_primary_monitor_cmd_is_shell_safe_for_dangerous_names(self):
-        import shlex as _shlex
         for name in self.DANGEROUS_NAMES:
             with self.subTest(name=name):
-                cmd = monitor._xrandr_primary_cmd(name)
-                tokens = _shlex.split(cmd)
-                self.assertIn(name, tokens)
-                self.assertEqual(monitor._extract_primary_from_cmd(cmd), name)
+                cmd = caelestia_core.render_xrandr_primary_cmd(name)
+                self.assertEqual(caelestia_core.parse_xrandr_primary_cmd(cmd), name)
 
     def test_primary_monitor_cmd_survives_lua_render_roundtrip(self):
         for name in self.DANGEROUS_NAMES:
             with self.subTest(name=name):
-                cmd = monitor._xrandr_primary_cmd(name)
+                cmd = caelestia_core.render_xrandr_primary_cmd(name)
                 rendered = caelestia_core.render_autostart_cmd(cmd)
-                recovered = caelestia_core.parse_autostart_cmd(rendered)
-                self.assertEqual(monitor._extract_primary_from_cmd(recovered), name)
+                recovered_cmd = caelestia_core.parse_autostart_cmd(rendered)
+                self.assertEqual(caelestia_core.parse_xrandr_primary_cmd(recovered_cmd), name)
 
 
 class ExecsPathResolutionTest(unittest.TestCase):
@@ -127,10 +125,14 @@ class ExecsPathResolutionTest(unittest.TestCase):
     def test_primary_monitor_resolves_execs_domain(self):
         with mock.patch.object(monitor, "resolve_path") as resolve_mock, \
              mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA), \
+             mock.patch.object(monitor, "_apply_primary_monitor_live"), \
              mock.patch.object(monitor, "write_managed_lua_block_and_reload"):
             resolve_mock.return_value = Path(self._tmpdir.name) / "execs.lua"
             monitor._set_primary_monitor(None)
-        resolve_mock.assert_called_once_with("execs", hp.Provider.LUA)
+        # Called at least once for the pre-write snapshot read and once
+        # for the write itself — every call must resolve the same domain.
+        resolve_mock.assert_called_with("execs", hp.Provider.LUA)
+        self.assertGreaterEqual(resolve_mock.call_count, 2)
 
     def test_lua_path_ends_in_dot_lua_and_legacy_in_dot_conf(self):
         self.assertTrue(str(hp.LUA_PATHS["execs"]).endswith(".lua"))
@@ -359,8 +361,9 @@ class WallpaperLegacyAutostartTest(_RealFileWriterTestBase):
 
 class PrimaryMonitorLuaTest(_RealFileWriterTestBase):
     def test_set_switch_and_remove(self):
+        dispatch = _InterceptedRun()
         p1, p2 = self._lua_ctx()
-        with p1, p2:
+        with p1, p2, mock.patch.object(hp.subprocess, "run", side_effect=dispatch):
             monitor._set_primary_monitor("DP-1")
             self.assertEqual(monitor._get_primary_monitor(hp.Provider.LUA), "DP-1")
             monitor._set_primary_monitor("HDMI-A-1")
@@ -384,7 +387,8 @@ class PrimaryMonitorLuaTest(_RealFileWriterTestBase):
         p1, p2 = self._lua_ctx()
         with p1, p2, mock.patch.object(hp.subprocess, "run", side_effect=dispatch):
             monitor._set_primary_monitor("DP-1")
-        self.assertIn(["xrandr", "--output", "DP-1", "--primary"], dispatch.calls)
+        xrandr = shutil.which("xrandr")
+        self.assertIn([xrandr, "--output", "DP-1", "--primary"], dispatch.calls)
 
     def test_clear_does_not_invoke_xrandr(self):
         dispatch = _InterceptedRun()
@@ -394,10 +398,14 @@ class PrimaryMonitorLuaTest(_RealFileWriterTestBase):
         self.assertFalse(any(call[0] == "xrandr" for call in dispatch.calls))
 
 
+def _ok_xrandr_result():
+    return mock.MagicMock(returncode=0, stdout="", stderr="")
+
+
 class PrimaryMonitorLegacyTest(_RealFileWriterTestBase):
     def test_set_switch_and_remove(self):
         p1, p2 = self._legacy_ctx()
-        with p1, p2, mock.patch.object(monitor.subprocess, "run"):
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", return_value=_ok_xrandr_result()):
             monitor._set_primary_monitor("DP-1")
             self.assertEqual(monitor._get_primary_monitor(hp.Provider.HYPRLANG), "DP-1")
             monitor._set_primary_monitor(None)
@@ -405,17 +413,22 @@ class PrimaryMonitorLegacyTest(_RealFileWriterTestBase):
 
     def test_manual_xrandr_primary_line_outside_block_is_not_treated_as_app_owned(self):
         # A manual, pre-existing "--primary" line must never be read back
-        # as this app's own value (no ownership-by-content-similarity),
-        # nor be touched/removed by a write to the app's own block.
-        self.execs_conf.write_text("exec-once = xrandr --output MANUAL --primary\n")
+        # as this app's own value (no ownership-by-content-similarity) —
+        # but per M6.1 it now IS treated as a competing handler that
+        # fails the write closed (see CompetingPrimaryMonitorHandlerTest),
+        # so the manual line is preserved not because it merely sits
+        # outside the block, but because the write never happens at all.
+        original = "exec-once = xrandr --output MANUAL --primary\n"
+        self.execs_conf.write_text(original)
         p1, p2 = self._legacy_ctx()
         with p1, p2:
             self.assertEqual(monitor._get_primary_monitor(hp.Provider.HYPRLANG), "")
-            with mock.patch.object(monitor.subprocess, "run"):
+            with (
+                mock.patch.object(monitor.subprocess, "run", return_value=_ok_xrandr_result()),
+                self.assertRaises(hp.ManagedBlockError),
+            ):
                 monitor._set_primary_monitor("DP-1")
-        text = self.execs_conf.read_text()
-        self.assertIn("exec-once = xrandr --output MANUAL --primary", text)
-        self.assertIn("DP-1", text)
+        self.assertEqual(self.execs_conf.read_text(), original)
 
     def test_never_treats_wallpaper_block_content_as_primary(self):
         p1, p2 = self._legacy_ctx()
@@ -535,6 +548,469 @@ class ReadManagedLegacyBlockTest(unittest.TestCase):
         )
         self.assertEqual(hp.read_managed_legacy_block(self.path, "a"), ["line-a"])
         self.assertEqual(hp.read_managed_legacy_block(self.path, "b"), ["line-b"])
+
+
+# ── M6.1 hardening: primary-monitor xrandr error handling ──────────────────
+
+
+class PrimaryMonitorXrandrErrorTest(_RealFileWriterTestBase):
+    """xrandr errors (non-zero exit, timeout, missing binary, OSError)
+    must be treated as errors — never swallowed via print() — and must
+    roll back an already-persisted config change."""
+
+    def test_non_zero_returncode_raises_with_stderr(self):
+        p1, p2 = self._legacy_ctx()
+        result = mock.MagicMock(returncode=1, stdout="", stderr="Cannot find output")
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", return_value=result), \
+             self.assertRaisesRegex(RuntimeError, "Cannot find output"):
+            monitor._set_primary_monitor("NOPE")
+
+    def test_timeout_raises(self):
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, mock.patch.object(
+            monitor.subprocess, "run",
+            side_effect=monitor.subprocess.TimeoutExpired(cmd="xrandr", timeout=3),
+        ), self.assertRaises(RuntimeError):
+            monitor._set_primary_monitor("DP-1")
+
+    def test_missing_binary_raises(self):
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, mock.patch.object(monitor.shutil, "which", return_value=None), \
+             self.assertRaisesRegex(RuntimeError, "xrandr"):
+            monitor._set_primary_monitor("DP-1")
+
+    def test_oserror_raises(self):
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", side_effect=OSError("no exec")), \
+             self.assertRaises(RuntimeError):
+            monitor._set_primary_monitor("DP-1")
+
+    def test_never_prints_and_swallows(self):
+        p1, p2 = self._legacy_ctx()
+        result = mock.MagicMock(returncode=1, stdout="", stderr="boom")
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", return_value=result), \
+             mock.patch("builtins.print") as print_mock:
+            with self.assertRaises(RuntimeError):
+                monitor._set_primary_monitor("DP-1")
+        print_mock.assert_not_called()
+
+    def test_live_failure_rolls_back_already_persisted_config(self):
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", return_value=_ok_xrandr_result()):
+            monitor._set_primary_monitor("DP-1")
+        original = self.execs_conf.read_bytes()
+
+        p1, p2 = self._legacy_ctx()
+        bad_result = mock.MagicMock(returncode=1, stdout="", stderr="bad output")
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", return_value=bad_result), \
+             self.assertRaises(RuntimeError):
+            monitor._set_primary_monitor("BOGUS")
+        self.assertEqual(self.execs_conf.read_bytes(), original)
+
+    def test_live_failure_leaves_no_false_effective_state(self):
+        p1, p2 = self._legacy_ctx()
+        bad_result = mock.MagicMock(returncode=1, stdout="", stderr="bad")
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", return_value=bad_result), \
+             self.assertRaises(RuntimeError):
+            monitor._set_primary_monitor("BOGUS")
+        self.assertEqual(monitor._get_primary_monitor(hp.Provider.HYPRLANG), "")
+
+    def test_second_reload_and_double_error_message_when_rollback_write_also_fails(self):
+        bad_result = mock.MagicMock(returncode=1, stdout="", stderr="xrandr failed")
+        p1, p2 = self._legacy_ctx()
+        with (
+            p1, p2,
+            mock.patch.object(monitor.subprocess, "run", return_value=bad_result),
+            mock.patch.object(
+                monitor,
+                "_write_primary_monitor_lines",
+                side_effect=[None, hp.ManagedBlockError("concurrent edit")],
+            ),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                monitor._set_primary_monitor("BOGUS")
+        message = str(ctx.exception)
+        self.assertIn("xrandr failed", message)
+        self.assertIn("concurrent edit", message)
+
+
+class PrimaryMonitorRemovalTest(_RealFileWriterTestBase):
+    """Clearing the primary monitor uses the documented `xrandr
+    --noprimary` global flag (verified via `man xrandr`: "Don't define a
+    primary output") — a real, distinct flag from the per-output
+    `--primary`, not a guess."""
+
+    def test_clear_invokes_noprimary_not_output_primary(self):
+        dispatch = _InterceptedRun()
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", side_effect=dispatch):
+            monitor._set_primary_monitor(None)
+        xrandr = shutil.which("xrandr")
+        self.assertIn([xrandr, "--noprimary"], dispatch.calls)
+        self.assertFalse(any("--output" in call for call in dispatch.calls))
+
+    def test_clear_failure_is_a_visible_error_not_silent(self):
+        result = mock.MagicMock(returncode=1, stdout="", stderr="noprimary failed")
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", return_value=result), \
+             self.assertRaisesRegex(RuntimeError, "noprimary failed"):
+            monitor._set_primary_monitor(None)
+
+    def test_clear_after_set_removes_persisted_entry(self):
+        p1, p2 = self._lua_ctx()
+        with p1, p2, mock.patch.object(hp.subprocess, "run", side_effect=_InterceptedRun()):
+            monitor._set_primary_monitor("DP-1")
+            self.assertEqual(monitor._get_primary_monitor(hp.Provider.LUA), "DP-1")
+            monitor._set_primary_monitor(None)
+        self.assertEqual(
+            hp.read_managed_lua_block(self.execs_lua, monitor.PRIMARY_MONITOR_BLOCK), []
+        )
+
+
+# ── M6.1 hardening: competing manual autostart handlers ────────────────────
+
+
+class CompetingWallpaperHandlerTest(_RealFileWriterTestBase):
+    def test_static_competing_legacy_entry_before_block_fails_closed(self):
+        self.execs_conf.write_text("exec-once = mpvpaper '*' /manual.mp4\n")
+        original = self.execs_conf.read_text()
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/new.mp4"))
+        self.assertEqual(self.execs_conf.read_text(), original)
+        self.reload_mock.assert_not_called()
+
+    def test_static_competing_legacy_entry_after_own_block_fails_closed(self):
+        p1, p2 = self._legacy_ctx()
+        with p1, p2:
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/first.mp4"))
+        with self.execs_conf.open("a") as f:
+            f.write("exec-once = mpvpaper '*' /manual-after.mp4\n")
+        original = self.execs_conf.read_text()
+        self.reload_mock.reset_mock()
+
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/second.mp4"))
+        self.assertEqual(self.execs_conf.read_text(), original)
+        self.reload_mock.assert_not_called()
+
+    def test_static_competing_lua_entry_before_block_fails_closed(self):
+        self.execs_lua.write_text(
+            'hl.on("hyprland.start", function() hl.exec_cmd("mpvpaper \'*\' /manual.mp4") end)\n'
+        )
+        original = self.execs_lua.read_text()
+        p1, p2 = self._lua_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/new.mp4"))
+        self.assertEqual(self.execs_lua.read_text(), original)
+        self.reload_mock.assert_not_called()
+
+    def test_static_competing_lua_entry_after_own_block_fails_closed(self):
+        p1, p2 = self._lua_ctx()
+        with p1, p2:
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/first.mp4"))
+        with self.execs_lua.open("a") as f:
+            f.write(
+                'hl.on("hyprland.start", function() '
+                'hl.exec_cmd("mpvpaper \'*\' /manual-after.mp4") end)\n'
+            )
+        original = self.execs_lua.read_text()
+        self.reload_mock.reset_mock()
+
+        p1, p2 = self._lua_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/second.mp4"))
+        self.assertEqual(self.execs_lua.read_text(), original)
+        self.reload_mock.assert_not_called()
+
+    def test_dynamic_unparseable_hyprland_start_handler_fails_closed(self):
+        self.execs_lua.write_text(
+            'hl.on("hyprland.start", function() local x = 1 hl.exec_cmd("x") end)\n'
+        )
+        original = self.execs_lua.read_text()
+        p1, p2 = self._lua_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/new.mp4"))
+        self.assertEqual(self.execs_lua.read_text(), original)
+
+    def test_unrelated_hyprland_start_handler_does_not_block(self):
+        self.execs_lua.write_text('hl.on("hyprland.start", function() hl.exec_cmd("waybar") end)\n')
+        p1, p2 = self._lua_ctx()
+        with p1, p2:
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/new.mp4"))
+        self.assertIn(
+            "new.mp4",
+            hp.read_managed_lua_block(self.execs_lua, wallpaper.WALLPAPER_AUTOSTART_BLOCK)[0],
+        )
+
+    def test_wrong_event_handler_does_not_block(self):
+        self.execs_lua.write_text(
+            'hl.on("window.open", function() hl.exec_cmd("mpvpaper \'*\' /x.mp4") end)\n'
+        )
+        p1, p2 = self._lua_ctx()
+        with p1, p2:
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/new.mp4"))
+        self.assertIn(
+            "new.mp4",
+            hp.read_managed_lua_block(self.execs_lua, wallpaper.WALLPAPER_AUTOSTART_BLOCK)[0],
+        )
+
+
+class CompetingPrimaryMonitorHandlerTest(_RealFileWriterTestBase):
+    def test_static_competing_legacy_entry_before_block_fails_closed(self):
+        self.execs_conf.write_text("exec-once = xrandr --output MANUAL --primary\n")
+        original = self.execs_conf.read_text()
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            monitor._set_primary_monitor("DP-1")
+        self.assertEqual(self.execs_conf.read_text(), original)
+        self.reload_mock.assert_not_called()
+
+    def test_static_competing_legacy_entry_after_own_block_fails_closed(self):
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", return_value=_ok_xrandr_result()):
+            monitor._set_primary_monitor("DP-1")
+        with self.execs_conf.open("a") as f:
+            f.write("exec-once = xrandr --output MANUAL --primary\n")
+        original = self.execs_conf.read_text()
+        self.reload_mock.reset_mock()
+
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            monitor._set_primary_monitor("HDMI-A-1")
+        self.assertEqual(self.execs_conf.read_text(), original)
+        self.reload_mock.assert_not_called()
+
+    def test_static_competing_lua_entry_fails_closed(self):
+        self.execs_lua.write_text(
+            'hl.on("hyprland.start", function() '
+            'hl.exec_cmd("xrandr --output MANUAL --primary") end)\n'
+        )
+        original = self.execs_lua.read_text()
+        p1, p2 = self._lua_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            monitor._set_primary_monitor("DP-1")
+        self.assertEqual(self.execs_lua.read_text(), original)
+
+    def test_dynamic_unparseable_handler_fails_closed(self):
+        self.execs_lua.write_text(
+            'hl.on("hyprland.start", function() local x = 1 '
+            'hl.exec_cmd("xrandr --output DP-2 --primary") end)\n'
+        )
+        original = self.execs_lua.read_text()
+        p1, p2 = self._lua_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            monitor._set_primary_monitor("DP-1")
+        self.assertEqual(self.execs_lua.read_text(), original)
+
+    def test_unrelated_handler_does_not_block(self):
+        self.execs_lua.write_text('hl.on("hyprland.start", function() hl.exec_cmd("waybar") end)\n')
+        p1, p2 = self._lua_ctx()
+        with p1, p2, mock.patch.object(hp.subprocess, "run", side_effect=_InterceptedRun()):
+            monitor._set_primary_monitor("DP-1")
+            self.assertEqual(monitor._get_primary_monitor(hp.Provider.LUA), "DP-1")
+
+    def test_has_competing_handler_reports_true_only_when_relevant(self):
+        p1, p2 = self._lua_ctx()
+        with p1, p2:
+            self.assertFalse(monitor._has_competing_primary_monitor_handler(hp.Provider.LUA))
+            self.execs_lua.write_text(
+                'hl.on("hyprland.start", function() '
+                'hl.exec_cmd("xrandr --output MANUAL --primary") end)\n'
+            )
+            self.assertTrue(monitor._has_competing_primary_monitor_handler(hp.Provider.LUA))
+
+
+# ── M6.1 hardening: legacy_predicate / pre_write_check re-verified under lock ──
+
+
+class LegacyPredicateLockRaceTest(unittest.TestCase):
+    """Deterministic (no sleeps) proof that both `legacy_predicate` and
+    the newer generic `pre_write_check` are re-verified against the exact
+    bytes under the lock, not just a pre-lock snapshot — closing the
+    TOCTOU window the pre-lock-only check alone would leave open."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.reload_patcher = mock.patch.object(hp, "reload_hyprland")
+        self.reload_mock = self.reload_patcher.start()
+        self.addCleanup(self.reload_patcher.stop)
+
+    def test_legacy_predicate_content_injected_between_precheck_and_lock_is_caught(self):
+        path = Path(self._tmpdir.name) / "config.conf"
+        path.write_text("# manual\n")
+        real_lock = hp._with_managed_write_lock
+
+        def racing_lock(p):
+            lock = real_lock(p)
+            p.write_text("# manual\nexec-once = legacy-owned-thing\n")
+            return lock
+
+        with mock.patch.object(hp, "_with_managed_write_lock", side_effect=racing_lock), \
+             self.assertRaises(hp.ManagedBlockError):
+            hp.write_managed_legacy_block_and_reload(
+                path, "test-block", ["exec-once = new"],
+                legacy_predicate=lambda line: "legacy-owned-thing" in line,
+            )
+        content = path.read_text()
+        self.assertIn("legacy-owned-thing", content)
+        self.assertNotIn("test-block", content)
+        self.assertNotIn("BEGIN", content)
+        self.reload_mock.assert_not_called()
+
+    def test_pre_write_check_sees_content_injected_between_precheck_and_lock(self):
+        path = Path(self._tmpdir.name) / "config2.conf"
+        path.write_text("# manual\n")
+        real_lock = hp._with_managed_write_lock
+
+        def racing_lock(p):
+            lock = real_lock(p)
+            p.write_text("# manual\nexec-once = injected\n")
+            return lock
+
+        seen_texts = []
+
+        def pre_write_check(text):
+            seen_texts.append(text)
+            if "injected" in text:
+                raise hp.ManagedBlockError("competing content detected")
+
+        with mock.patch.object(hp, "_with_managed_write_lock", side_effect=racing_lock), \
+             self.assertRaisesRegex(hp.ManagedBlockError, "competing content detected"):
+            hp.write_managed_legacy_block_and_reload(
+                path, "test-block", ["exec-once = new"], pre_write_check=pre_write_check
+            )
+        self.assertEqual(len(seen_texts), 1)
+        self.assertIn("injected", seen_texts[0])
+        self.reload_mock.assert_not_called()
+
+    def test_pre_write_check_for_lua_writer_sees_injected_content(self):
+        path = Path(self._tmpdir.name) / "config.lua"
+        path.write_text("-- manual\n")
+        real_lock = hp._with_managed_write_lock
+
+        def racing_lock(p):
+            lock = real_lock(p)
+            p.write_text("-- manual\n-- injected\n")
+            return lock
+
+        seen_texts = []
+
+        def pre_write_check(text):
+            seen_texts.append(text)
+            if "injected" in text:
+                raise hp.ManagedBlockError("competing content detected")
+
+        with mock.patch.object(hp, "_with_managed_write_lock", side_effect=racing_lock), \
+             self.assertRaisesRegex(hp.ManagedBlockError, "competing content detected"):
+            hp.write_managed_lua_block_and_reload(
+                path, "test-block", ["-- x"], pre_write_check=pre_write_check
+            )
+        self.assertEqual(len(seen_texts), 1)
+        self.assertIn("injected", seen_texts[0])
+        self.reload_mock.assert_not_called()
+
+    def test_no_race_means_no_error(self):
+        path = Path(self._tmpdir.name) / "config3.conf"
+        path.write_text("# manual\n")
+        hp.write_managed_legacy_block_and_reload(
+            path, "test-block", ["exec-once = new"],
+            legacy_predicate=lambda line: "legacy-owned-thing" in line,
+        )
+        self.assertIn("exec-once = new", path.read_text())
+        self.reload_mock.assert_called_once()
+
+
+# ── M6.1 hardening: neutral UI state for a competing primary handler ───────
+
+
+class MonitorConflictUITest(unittest.TestCase):
+    @staticmethod
+    def _model(**overrides):
+        data = {
+            "name": "DP-1", "description": "DP-1", "x": 0, "y": 0,
+            "width": 1920, "height": 1080, "scale": 1.0, "transform": 0,
+            "disabled": False, "refreshRate": 60.0,
+        }
+        data.update(overrides)
+        return monitor.MonitorModel(data)
+
+    def test_load_monitors_forces_primary_false_and_sets_conflict_flag(self):
+        page = monitor.MonitorPage.__new__(monitor.MonitorPage)
+        page.main_window = mock.MagicMock()
+        page._canvas = mock.MagicMock()
+        page._settings_panel = mock.MagicMock()
+        page._apply_btn = mock.MagicMock()
+
+        raw = [{
+            "name": "DP-1", "description": "DP-1", "x": 0, "y": 0,
+            "width": 1920, "height": 1080, "scale": 1.0, "transform": 0,
+            "disabled": False, "refreshRate": 60.0,
+        }]
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(monitor, "_get_live_monitors", return_value=raw),
+            mock.patch.object(monitor, "_has_competing_primary_monitor_handler", return_value=True),
+            mock.patch.object(monitor, "_get_primary_monitor", return_value="DP-1"),
+            mock.patch.object(monitor, "_get_bar_persistent", return_value=True),
+        ):
+            monitor.MonitorPage.load_monitors(page)
+
+        self.assertEqual(len(page._monitors), 1)
+        m = page._monitors[0]
+        self.assertTrue(m.primary_conflict)
+        # Forced False despite _get_primary_monitor reporting "DP-1" —
+        # the effective state is undetermined, never confidently shown.
+        self.assertFalse(m.primary)
+
+    def test_load_monitors_without_conflict_marks_primary_normally(self):
+        page = monitor.MonitorPage.__new__(monitor.MonitorPage)
+        page.main_window = mock.MagicMock()
+        page._canvas = mock.MagicMock()
+        page._settings_panel = mock.MagicMock()
+        page._apply_btn = mock.MagicMock()
+
+        raw = [{
+            "name": "DP-1", "description": "DP-1", "x": 0, "y": 0,
+            "width": 1920, "height": 1080, "scale": 1.0, "transform": 0,
+            "disabled": False, "refreshRate": 60.0,
+        }]
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(monitor, "_get_live_monitors", return_value=raw),
+            mock.patch.object(monitor, "_has_competing_primary_monitor_handler", return_value=False),
+            mock.patch.object(monitor, "_get_primary_monitor", return_value="DP-1"),
+            mock.patch.object(monitor, "_get_bar_persistent", return_value=True),
+        ):
+            monitor.MonitorPage.load_monitors(page)
+
+        m = page._monitors[0]
+        self.assertFalse(m.primary_conflict)
+        self.assertTrue(m.primary)
+
+    def test_settings_panel_disables_row_and_changes_subtitle_on_conflict(self):
+        # Locale-independent: compares behavior/state (booleans, and the
+        # subtitle string against itself in the non-conflict case) rather
+        # than asserting on literal translated text.
+        panel = monitor.MonitorSettingsPanel()
+        with mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA):
+            normal = self._model()
+            normal.primary = True
+            normal.primary_conflict = False
+            panel.load(normal)
+            normal_subtitle = panel._primary_row.get_subtitle()
+            self.assertTrue(panel._primary_row.get_sensitive())
+            self.assertTrue(panel._primary_row.get_active())
+
+            conflicted = self._model()
+            conflicted.primary = False
+            conflicted.primary_conflict = True
+            panel.load(conflicted)
+            self.assertFalse(panel._primary_row.get_sensitive())
+            self.assertFalse(panel._primary_row.get_active())
+            self.assertNotEqual(panel._primary_row.get_subtitle(), normal_subtitle)
 
 
 if __name__ == "__main__":

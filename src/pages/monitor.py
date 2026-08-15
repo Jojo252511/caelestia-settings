@@ -1,5 +1,5 @@
 import json
-import shlex
+import shutil
 import subprocess
 import cairo
 import caelestia_core
@@ -9,6 +9,9 @@ from src.hypr_provider import (
     ConfigCapability,
     Provider,
     LuaWriteError,
+    ManagedBlockError,
+    find_competing_lua_autostart_entries,
+    find_lines_outside_managed_blocks,
     load_provider,
     read_managed_legacy_block,
     read_managed_lua_block,
@@ -226,23 +229,13 @@ def _save_monitors_conf(monitors: list):
 # content, only because it sits inside this app's own named block).
 
 
-def _xrandr_primary_cmd(name: str) -> str:
-    return f"xrandr --output {shlex.quote(name)} --primary"
-
-
-def _extract_primary_from_cmd(cmd: str) -> str:
-    """'xrandr --output DP-1 --primary' -> 'DP-1'."""
-    parts = shlex.split(cmd)
-    try:
-        idx = parts.index("--output")
-        return parts[idx + 1]
-    except (ValueError, IndexError):
-        return ""
-
-
 def _get_primary_monitor(provider: Provider | None = None) -> str:
     """Liest den aktuellen app-eigenen Hauptmonitor-Eintrag aus dem
-    "primary-monitor" managed block in execs.conf/execs.lua."""
+    "primary-monitor" managed block in execs.conf/execs.lua. Returns ""
+    both when no primary is set AND when the true effective state is
+    undetermined because a competing foreign handler exists — callers
+    that need to distinguish those two cases (i.e. the UI) must also
+    check `_has_competing_primary_monitor_handler()`."""
     if provider is None:
         provider = load_provider()
     if provider is None:
@@ -253,11 +246,9 @@ def _get_primary_monitor(provider: Provider | None = None) -> str:
         for line in lines:
             try:
                 cmd = caelestia_core.parse_autostart_cmd(line)
+                return caelestia_core.parse_xrandr_primary_cmd(cmd)
             except ValueError:
                 continue
-            name = _extract_primary_from_cmd(cmd)
-            if name:
-                return name
         return ""
 
     lines = read_managed_legacy_block(path, PRIMARY_MONITOR_BLOCK)
@@ -266,36 +257,156 @@ def _get_primary_monitor(provider: Provider | None = None) -> str:
         if not line.startswith("exec-once"):
             continue
         cmd = line.split("=", 1)[1].strip() if "=" in line else ""
-        name = _extract_primary_from_cmd(cmd)
-        if name:
-            return name
+        try:
+            return caelestia_core.parse_xrandr_primary_cmd(cmd)
+        except ValueError:
+            continue
     return ""
+
+
+def _competing_primary_monitor_lines(text: str, provider: Provider) -> list[str]:
+    """Foreign (non-app-owned) content elsewhere in execs that plausibly
+    also controls the primary monitor — see
+    `find_competing_lua_autostart_entries`/`find_lines_outside_managed_blocks`
+    in hypr_provider.py for the detection semantics."""
+
+    def relevant(cmd: str) -> bool:
+        return "xrandr" in cmd and "--primary" in cmd
+
+    if provider is Provider.LUA:
+        return find_competing_lua_autostart_entries(text, [PRIMARY_MONITOR_BLOCK], relevant)
+    return [
+        line
+        for line in find_lines_outside_managed_blocks(text, [PRIMARY_MONITOR_BLOCK], "#")
+        if line.strip().startswith("exec-once") and relevant(line)
+    ]
+
+
+def _has_competing_primary_monitor_handler(provider: Provider | None = None) -> bool:
+    """True when some entry OUTSIDE the app's own "primary-monitor" block
+    could also be setting/clearing the X11 primary output — Hyprland runs
+    every autostart entry it finds, not just this app's own, so such an
+    entry means the true effective primary monitor cannot be reliably
+    read back from this app's own persisted value alone."""
+    if provider is None:
+        provider = load_provider()
+    if provider is None:
+        return False
+    path = resolve_path("execs", provider)
+    if not path.exists():
+        return False
+    text = path.read_bytes().decode("utf-8")
+    return bool(_competing_primary_monitor_lines(text, provider))
+
+
+def _raise_if_competing_primary_monitor(text: str, provider: Provider) -> None:
+    if _competing_primary_monitor_lines(text, provider):
+        raise ManagedBlockError(
+            t(
+                "Another manually written primary-monitor exec entry exists outside the "
+                "app-managed block; resolve the conflict manually before saving."
+            )
+        )
+
+
+def _read_primary_monitor_lines(provider: Provider) -> list[str]:
+    """Snapshots the app's own currently persisted primary-monitor lines
+    — used to restore them verbatim if the live-apply step fails after a
+    new value was already successfully persisted."""
+    path = resolve_path("execs", provider)
+    if provider is Provider.LUA:
+        return read_managed_lua_block(path, PRIMARY_MONITOR_BLOCK)
+    return read_managed_legacy_block(path, PRIMARY_MONITOR_BLOCK)
+
+
+def _write_primary_monitor_lines(provider: Provider, lines: list[str], *, pre_write_check=None) -> None:
+    path = resolve_path("execs", provider)
+    if provider is Provider.LUA:
+        write_managed_lua_block_and_reload(
+            path, PRIMARY_MONITOR_BLOCK, lines, pre_write_check=pre_write_check
+        )
+    else:
+        write_managed_legacy_block_and_reload(
+            path, PRIMARY_MONITOR_BLOCK, lines, pre_write_check=pre_write_check
+        )
+
+
+def _apply_primary_monitor_live(name: str | None) -> None:
+    """Applies the primary-monitor change live via a direct `xrandr` call
+    — this is an X11/XWayland-level concept, not part of Hyprland's own
+    compositor config. `--noprimary` (a real, documented xrandr flag,
+    distinct from the per-output `--primary` flag) clears the primary
+    designation entirely — see `man xrandr`, "Don't define a primary
+    output." Crucially, `hyprctl reload` never re-triggers the
+    `hyprland.start` event an autostart entry is registered against, so
+    persisting the execs entry alone would only take effect at the next
+    Hyprland/X11 session start — this direct call is the ONLY way to
+    change the currently running session's primary output immediately.
+
+    Raises `RuntimeError` — never prints and swallows — on a non-zero
+    exit code, a timeout, a missing `xrandr` binary, or any other failure
+    to run it, with the returncode/stderr preserved in the message. Does
+    NOT additionally verify the change via a `--listmonitors`-style
+    read-back: xrandr's primary-output flag reporting is not reliably
+    consistent when running against an XWayland server (the normal case
+    for this app, a Hyprland/Wayland settings tool), and a false-negative
+    verification would cause a spurious rollback of an otherwise-
+    successful change, which is worse than not verifying at all.
+    """
+    xrandr = shutil.which("xrandr")
+    if xrandr is None:
+        raise RuntimeError(t("xrandr was not found; the primary monitor change was not applied live."))
+    args = [xrandr, "--output", name, "--primary"] if name else [xrandr, "--noprimary"]
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=3)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"xrandr timed out: {e}") from e
+    except OSError as e:
+        raise RuntimeError(f"xrandr failed to run: {e}") from e
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or "").strip() or f"xrandr exited with code {result.returncode}")
 
 
 def _set_primary_monitor(name: str | None):
     """Persists (or clears, when `name` is None) the app-owned primary
     monitor exec entry for the currently active provider under the
-    "primary-monitor" managed block, then applies it live via `xrandr`
-    directly — this is an X11/XWayland-level concept, not part of
-    Hyprland's own compositor config, so the live-apply step is identical
-    for both providers."""
+    "primary-monitor" managed block, THEN applies it live via `xrandr`.
+    If the live-apply then fails, the just-persisted config is rolled
+    back to its previous content (and reloaded again, bypassing the
+    competing-content guard, which must never block a rollback) and the
+    live-apply error is re-raised — the caller must never treat this as
+    a success. Fails closed (no write, no live action) if another
+    manually written entry outside the app-managed block also plausibly
+    controls the primary monitor."""
     provider = require_config_capability(ConfigCapability.EXECS)
-    path = resolve_path("execs", provider)
-    cmd = _xrandr_primary_cmd(name) if name else None
-
-    if provider is Provider.LUA:
-        lines = [caelestia_core.render_autostart_cmd(cmd)] if cmd else []
-        write_managed_lua_block_and_reload(path, PRIMARY_MONITOR_BLOCK, lines)
-    else:
-        lines = [f"exec-once = {cmd}"] if cmd else []
-        write_managed_legacy_block_and_reload(path, PRIMARY_MONITOR_BLOCK, lines)
+    previous_lines = _read_primary_monitor_lines(provider)
 
     if name:
+        cmd = caelestia_core.render_xrandr_primary_cmd(name)
+        lines = (
+            [caelestia_core.render_autostart_cmd(cmd)]
+            if provider is Provider.LUA
+            else [f"exec-once = {cmd}"]
+        )
+    else:
+        lines = []
+
+    def pre_write_check(text: str) -> None:
+        _raise_if_competing_primary_monitor(text, provider)
+
+    _write_primary_monitor_lines(provider, lines, pre_write_check=pre_write_check)
+
+    try:
+        _apply_primary_monitor_live(name)
+    except Exception as live_error:
         try:
-            subprocess.run(["xrandr", "--output", name, "--primary"],
-                           timeout=3, capture_output=True)
-        except Exception as e:
-            print(f"xrandr fehler: {e}")
+            _write_primary_monitor_lines(provider, previous_lines)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                f"{live_error}; additionally, restoring the previous primary monitor "
+                f"configuration failed: {rollback_error}"
+            ) from live_error
+        raise
 
 
 # ── shell.json Helpers ───────────────────────────────────────────────────────
@@ -390,6 +501,10 @@ class MonitorModel:
         self.bitdepth    = str(data.get("bitdepth", ""))
         # Hauptmonitor-Flag — wird separat aus execs.conf gesetzt
         self.primary     = False
+        # True wenn ein konkurrierender, nicht app-eigener Handler den
+        # Hauptmonitor ebenfalls setzen könnte — der effektive Zustand ist
+        # dann unbestimmt, .primary bleibt in diesem Fall immer False
+        self.primary_conflict = False
         # Taskleiste persistent — wird aus shell.json geladen
         self.bar_persistent = True
 
@@ -771,9 +886,20 @@ class MonitorSettingsPanel(Gtk.Box):
         self._scale_spin.set_value(m.scale)
         self._enabled_row.set_active(not m.disabled)
         self._primary_row.set_active(m.primary)
-        primary_available = load_provider() is not None
-        self._primary_row.set_sensitive(primary_available)
-        self._primary_row.set_subtitle(t("xrandr --primary (for X11 apps and tray)"))
+        if m.primary_conflict:
+            # A competing, non-app-owned handler could also set the
+            # primary monitor — the true effective state is undetermined,
+            # so this must never confidently claim m.primary either way
+            # (already forced False by load_monitors()); disable the
+            # switch entirely rather than risk showing a wrong state.
+            self._primary_row.set_sensitive(False)
+            self._primary_row.set_subtitle(
+                t("Overridden by another manual autostart entry — effective state undetermined")
+            )
+        else:
+            primary_available = load_provider() is not None
+            self._primary_row.set_sensitive(primary_available)
+            self._primary_row.set_subtitle(t("xrandr --primary (for X11 apps and tray)"))
         self._bar_row.set_active(m.bar_persistent)
 
         self._loading = False
@@ -910,10 +1036,16 @@ class MonitorPage(Gtk.Box):
         raw = _get_live_monitors()
         self._monitors = [MonitorModel(m) for m in raw]
 
-        # Hauptmonitor aus execs.conf/execs.lua markieren
-        primary_name = _get_primary_monitor()
+        # Hauptmonitor aus execs.conf/execs.lua markieren — bei einem
+        # konkurrierenden fremden Handler bleibt der Zustand für jeden
+        # Monitor unbestimmt (primary=False, primary_conflict=True),
+        # statt fälschlich den eigenen persistierten Wert als effektiv
+        # auszugeben.
+        primary_conflict = _has_competing_primary_monitor_handler()
+        primary_name = "" if primary_conflict else _get_primary_monitor()
         for m in self._monitors:
-            m.primary = (m.name == primary_name)
+            m.primary = (not primary_conflict) and (m.name == primary_name)
+            m.primary_conflict = primary_conflict
             m.bar_persistent = _get_bar_persistent(m.name)
 
         self._canvas.monitors = self._monitors
