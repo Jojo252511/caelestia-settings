@@ -28,13 +28,13 @@
 - Per-monitor settings: resolution, refresh rate, rotation, bit depth (8/10-bit HDR), scale
 - Set primary monitor (`xrandr --primary` via `execs.conf`)
 - Toggle taskbar visibility per monitor (`shell.json: bar.persistent`)
-- Rust-based parser for `monitors.conf` and `workspaces.conf`
+- Rust-based parsing for both Hyprlang and Lua monitor configuration
 
 ### Workspaces
 - Visual editor grouped by monitor (physical order from `hyprctl monitors`)
 - Add, remove and reorder workspaces
 - Set monitor assignment, default workspace (★) and persistent flag per workspace
-- Live apply via `hyprctl keyword workspace`
+- Provider-aware live apply: legacy keywords for Hyprlang, safe file write plus reload for Lua
 
 ### Keybinds
 - Full keybind editor — parser migrated from [HyprKeys](https://github.com/Jojo252511/hyprkeys)
@@ -49,13 +49,14 @@
 - Assign workspace per app (dynamically loaded from `monitors.conf`, including named special workspaces)
 - Set float behavior and match type (`class` or `initial_title`)
 - Handles Spotify Wayland and Chromium web apps automatically
-- Reads and displays existing `rules.conf` — manual rules are preserved, never duplicated
+- Reads and displays existing Hyprlang or Lua rules — manual rules are preserved
 - Conflict detection — warns before saving if the same class is assigned twice
 - Rust-based parser for `rules.conf` for improved performance and reliability
 
 ### General
 - Keyboard layout selector — ~90 XKB layouts with live Hyprland apply
 - NumLock on startup toggle
+- Provider-aware input configuration through `input.conf` or `input.lua`
 - System language (via `localectl`, requires sudo)
 - Timezone (via `timedatectl`, requires sudo)
 
@@ -100,12 +101,12 @@
 
 ### Dependencies
 
-For the application (Python UI + Rust parsing core):
+For the application (Python UI + Rust parsing/Lua core):
 ```bash
-sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil python-cairo rust networkmanager
+sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil python-cairo rust networkmanager lua
 ```
 
-For Rust module development — linting/testing only, not required just to build/run the app (optional):
+Optional Rust developer tooling (the Rust compiler itself is required above):
 ```bash
 rustup component add clippy rust-analyzer
 ```
@@ -186,6 +187,7 @@ caelestia-settings/
 │   │   └── src/
 │   │       ├── lib.rs        # Module exports
 │   │       ├── config.rs     # monitors.conf and workspaces.conf parsing
+│   │       ├── lua.rs        # Generic Lua value/call parsing and rendering
 │   │       ├── keybinds.rs    # keybinds.conf and variables.conf parsing
 │   │       ├── rules.rs       # rules.conf windowrule parsing
 │   │       ├── window_rule_conflicts.rs  # Conflict detection for window rules
@@ -219,7 +221,7 @@ caelestia-settings/
 The application uses a hybrid Python + Rust architecture:
 
 - **Python/GTK4**: The main application, UI, and all user interaction logic is written in Python using GTK4 and Libadwaita
-- **Rust Core** (`caelestia-core`): Primary Rust crate providing all configuration file parsers (monitors.conf, workspaces.conf, keybinds.conf, variables.conf, rules.conf) and utility functions (PWM conversion, conflict detection)
+- **Rust Core** (`caelestia-core`): Configuration parsers, generic Lua call/table codec, data models, rendering, and utility functions (PWM conversion, conflict detection)
 - **PyO3 Bridge** (`caelestia-py`): Exposes `caelestia-core` to Python via PyO3, allowing the Python code to call Rust functions as if they were native Python extensions
 
 This separation allows:
@@ -227,19 +229,52 @@ This separation allows:
 - Full unit testing of parsing logic without Python dependencies
 - Complete migration of configuration parsers to Rust (mandatory backend)
 
+Python owns the GTK UI, provider selection, file I/O, process execution, and user-visible errors. Lua syntax is parsed and rendered through the Rust core; there is no Python parser fallback.
+
+### Hyprland configuration providers (v2.0.0 development)
+
+Caelestia Settings is being migrated to support both the legacy Hyprlang provider (`.conf`) and Hyprland's Lua provider (`.lua`). During this transition, a temporary Yes/No prompt asks whether `hyprland.lua` is already active and stores that choice in `~/.config/caelestia-settings/hyprland_provider.json`. Closing the dialog does not guess a format and leaves provider-dependent pages locked. This prompt is explicitly transitional and will be removed once reliable automatic detection replaces it.
+
+The current migration status on `feat/hyprland-lua-migration` is:
+
+| Configuration area | Hyprlang | Lua |
+|---|---:|---:|
+| General / Input | Supported | Implemented in M5; independent QA pending |
+| Monitors | Supported | Supported |
+| Workspaces | Supported | Supported |
+| Window Rules | Supported | Supported |
+| Keybinds / Variables | Supported | Planned for M7 |
+| Wallpaper autostart | Supported | Planned for M6 |
+| Execs / primary monitor | Supported | Planned for M6 |
+| Installer / Doctor integration | Supported | Planned for M8 |
+
+Without an explicit provider choice, all provider-dependent configuration areas fail closed. Wi-Fi, Audio, Updates, Fans, and About remain provider-independent. The migration is tracked in [issue #51](https://github.com/Jojo252511/caelestia-settings/issues/51); v2.0.0 is not complete until the remaining milestones and release hardening are finished.
+
+### Safe managed blocks
+
+App-owned Lua output is isolated in named `BEGIN`/`END` managed blocks. Writes preserve content outside the selected block, reject missing or malformed ownership markers, serialize concurrent writers with a bounded lock, create a backup, validate the complete candidate file with `luac -p`, and replace it atomically. A successful write is followed by `hyprctl reload`; reload failures trigger a guarded rollback and a second reload. Manual Lua calls and other named blocks are not adopted as app-owned content.
+
 ---
 
 ## Config Files Modified
 
+The selected provider determines which Hyprland file is read and written. Unsupported Lua areas stay locked instead of silently editing an inactive Hyprlang file.
+
+| Area | Hyprlang path | Lua path | Current Lua status |
+|------|---------------|----------|--------------------|
+| Input | `~/.config/hypr/hyprland/input.conf` | `~/.config/hypr/hyprland/input.lua` | Implemented; M5 QA pending |
+| Monitors + workspaces | `~/.config/hypr/hyprland/monitors.conf` | `~/.config/hypr/hyprland/monitors.lua` | Supported |
+| Window Rules | `~/.config/hypr/hyprland/rules.conf` | `~/.config/hypr/hyprland/rules.lua` | Supported |
+| Keybinds | `~/.config/hypr/hyprland/keybinds.conf` | `~/.config/hypr/hyprland/keybinds.lua` | Planned for M7 |
+| Variables | `~/.config/hypr/variables.conf` | `~/.config/hypr/variables.lua` | Planned for M7 |
+| Autostart / primary monitor | `~/.config/hypr/hyprland/execs.conf` | `~/.config/hypr/hyprland/execs.lua` | Planned for M6 |
+
+Provider-independent Caelestia state is stored separately:
+
 | File | What changes |
 |------|-------------|
-| `~/.config/hypr/hyprland/input.conf` | Keyboard layout, NumLock |
-| `~/.config/hypr/hyprland/monitors.conf` | Monitor resolution, position, rotation, scale + workspace assignments |
-| `~/.config/hypr/hyprland/rules.conf` | Window rules (managed block, manual rules preserved) |
-| `~/.config/hypr/hyprland/keybinds.conf` | Keybinds (with automatic `.bak` before every change) |
-| `~/.config/hypr/hyprland/execs.conf` | Primary monitor (`xrandr --primary`) |
 | `~/.config/caelestia/shell.json` | Desktop clock settings, taskbar visibility |
-| `~/.config/caelestia-settings/window_rules.json` | Window rules cache |
+| `~/.config/caelestia-settings/window_rules.json` | Window Rules cache |
 
 ---
 
@@ -264,8 +299,9 @@ IS_GERMAN = False  # force English
 
 Automated testing and linting via GitHub Actions workflow (`.github/workflows/ci.yml`):
 
-- **Python**: `ruff check` for linting (targets Python 3.12)
-- **Rust**: `cargo fmt --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` for both `caelestia-core` and `caelestia-py` crates
+- **Python**: `ruff check main.py src/ tests/`; the test job builds and imports the real PyO3 extension before running `unittest` and an application-construction smoke test
+- **Lua**: `lua5.4`/`luac` is installed for syntax-validation tests
+- **Rust**: `cargo fmt --check`, `cargo clippy --locked --workspace --all-targets`, and `cargo test --locked --workspace` for both crates
 - **Security**: `gitleaks` for secret scanning
 
 Triggers on push and pull request to `main` and `dev` branches.
@@ -278,7 +314,7 @@ Triggers on push and pull request to `main` and `dev` branches.
 - Hyprland
 - [Caelestia](https://github.com/caelestia-dots/caelestia) rice
 - Python 3.12+
-- `python-gobject`, `libadwaita`, `pamixer`, `git`, `python-psutil`, `python-cairo`
+- `python-gobject`, `libadwaita`, `pamixer`, `git`, `python-psutil`, `python-cairo`, `lua`
 - `rust` (required — `caelestia_core` is built from source at install time, see Installation above)
 - `python-nvidia-ml-py` (optional — for GPU fan control: `yay -S python-nvidia-ml-py`)
 - `yay` (for system updates)
@@ -289,13 +325,23 @@ Triggers on push and pull request to `main` and `dev` branches.
 
 ---
 
-## What's New in 1.3.0
-
-- **Rust modules**: `window_rule_conflicts.rs` (conflict detection) and `fans.rs` (PWM percentage conversion) are now complete — fully tested (38/38 tests passing), clippy/fmt clean
-- **PyO3 bindings**: New `caelestia-py` crate exposes all `caelestia-core` parsing and utility functions to Python as the `caelestia_core` extension module
-- **Self-update fix**: `app_update.sh` now explicitly pins the `main` branch instead of following GitHub's default branch (previously pulled from `dev` by mistake)
-
 ## Roadmap
+
+### v2.0.0 — Full Rust + Lua Support
+
+- [x] M1: transitional provider selection and fail-closed capability gates
+- [x] M2: Rust Lua codec with PyO3 bindings
+- [x] M3: Lua monitor and workspace support
+- [x] M4: Lua window-rule support
+- [x] M5 implementation: Lua General/Input support (independent QA pending)
+- [ ] M6: Lua wallpaper/autostart and primary-monitor execs
+- [ ] M7: Lua keybinds and variables
+- [ ] M8: provider-aware installer and doctor
+- [ ] v2.0.0 release hardening and final validation
+
+Hyprlang support remains available throughout the migration. The temporary provider prompt will be removed after a reliable automatic detection path is available.
+
+### General roadmap
 
 - [x] Monitor canvas with drag-and-drop
 - [x] Workspace editor
