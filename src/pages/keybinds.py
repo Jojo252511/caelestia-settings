@@ -4,13 +4,20 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from src.lang import t
-from src.hypr_provider import ConfigCapability, Provider, require_config_capability
+from src.hypr_provider import (
+    ConfigCapability,
+    Provider,
+    capability_available,
+    load_provider,
+    require_config_capability,
+)
 from gi.repository import Gtk, Adw
 
 import caelestia_core
 
 KEYBINDS_CONF = Path.home() / ".config/hypr/hyprland/keybinds.conf"
 VARIABLES_CONF = Path.home() / ".config/hypr/variables.conf"
+_PROVIDER_UNSET = object()
 
 # ── Regex (aus hyprkeys übernommen) ──────────────────────────────────────────
 
@@ -64,7 +71,11 @@ def _resolve(raw: str, variables: dict) -> str:
     return caelestia_core.resolve(raw, variables)
 
 
-def parse_keybinds() -> list[dict]:
+def parse_keybinds(provider: Provider | None | object = _PROVIDER_UNSET) -> list[dict]:
+    if provider is _PROVIDER_UNSET:
+        provider = load_provider()
+    if not capability_available(provider, ConfigCapability.KEYBINDS):
+        return []
     if not KEYBINDS_CONF.exists():
         return []
     variables = _parse_variables(VARIABLES_CONF)
@@ -340,10 +351,23 @@ class KeybindsPage(Gtk.Box):
         self._empty.set_visible(False)
         self.append(self._empty)
 
-        self._load()
+        self.load_if_available(load_provider())
 
-    def _load(self):
-        self._all_binds = parse_keybinds()
+    def load_if_available(self, provider: Provider | None) -> bool:
+        if not capability_available(provider, ConfigCapability.KEYBINDS):
+            self._all_binds = []
+            self._filter()
+            return False
+        self._load(provider)
+        return True
+
+    def on_provider_changed(self, provider: Provider | None):
+        self.load_if_available(provider)
+
+    def _load(self, provider: Provider | None | object = _PROVIDER_UNSET):
+        if provider is _PROVIDER_UNSET:
+            provider = load_provider()
+        self._all_binds = parse_keybinds(provider)
         self._filter()
 
     def _filter(self):

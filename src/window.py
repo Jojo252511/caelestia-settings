@@ -169,6 +169,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_provider_chosen(self, provider):
         self._apply_provider_page_locks(provider)
+        self.general_page.on_provider_changed(provider)
+        self.keybinds_page.on_provider_changed(provider)
         self.mon_page.on_provider_changed()
         self.workspaces_page.on_provider_changed()
         self.window_rules_page.on_provider_changed()

@@ -2,7 +2,13 @@ import re
 import subprocess
 from gi.repository import Gtk, Adw
 from src.config import HYPR_INPUT_CONF
-from src.hypr_provider import ConfigCapability, Provider, require_config_capability
+from src.hypr_provider import (
+    ConfigCapability,
+    Provider,
+    capability_available,
+    load_provider,
+    require_config_capability,
+)
 from src.lang import t
 
 # Gängige Tastaturlayouts: (xkb-Code, Anzeigename)
@@ -106,10 +112,16 @@ KEYBOARD_LAYOUTS = [
     ("za",  "Südafrikanisch"),
 ]
 
+_PROVIDER_UNSET = object()
 
-def read_input_conf() -> dict:
+
+def read_input_conf(provider: Provider | None | object = _PROVIDER_UNSET) -> dict:
     """Liest input.conf und gibt ein Dict mit allen key=value zurück."""
     result = {}
+    if provider is _PROVIDER_UNSET:
+        provider = load_provider()
+    if not capability_available(provider, ConfigCapability.INPUT):
+        return result
     if not HYPR_INPUT_CONF.exists():
         return result
     try:
@@ -213,7 +225,7 @@ class GeneralPage(Gtk.Box):
         system_group.add(time_row)
 
         # Laden & Signale
-        self._load_all()
+        self.load_if_available(load_provider())
         self.layout_combo.connect("changed",        self._on_layout_changed)
         self.numlock_row.connect("notify::active",  self._on_numlock_changed)
         self.lang_combo.connect("changed",          self._on_language_changed)
@@ -221,10 +233,36 @@ class GeneralPage(Gtk.Box):
 
     # ── Laden ─────────────────────────────────────────────────────────────
 
-    def _load_all(self):
+    def _set_neutral_state(self):
+        self.is_loading = True
+        try:
+            self.layout_combo.set_active(-1)
+            self.numlock_row.set_active(False)
+            self.lang_combo.set_active(-1)
+            self.time_combo.set_active(-1)
+        finally:
+            self.is_loading = False
+
+    def load_if_available(self, provider: Provider | None) -> bool:
+        if not capability_available(provider, ConfigCapability.INPUT):
+            self._set_neutral_state()
+            return False
+        self._load_all(provider)
+        return True
+
+    def on_provider_changed(self, provider: Provider | None):
+        self.load_if_available(provider)
+
+    def _load_all(self, provider: Provider | None | object = _PROVIDER_UNSET):
         self.is_loading = True
 
-        conf = read_input_conf()
+        if provider is _PROVIDER_UNSET:
+            provider = load_provider()
+        if not capability_available(provider, ConfigCapability.INPUT):
+            self._set_neutral_state()
+            return
+
+        conf = read_input_conf(provider)
 
         # Tastaturlayout
         layout = conf.get("kb_layout", "us").lower()

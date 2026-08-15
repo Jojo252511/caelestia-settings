@@ -497,21 +497,35 @@ class WallpaperPage(Gtk.Box):
 
     # ── Auswahl ───────────────────────────────────────────────────────────
 
-    def _on_image_selected(self, path: Path):
-        self._stop_mpv()
+    def _run_wallpaper_action(self, action, *, missing_program_message: str | None = None):
+        """Run a live wallpaper action only while its capability is available."""
         try:
+            require_config_capability(
+                ConfigCapability.WALLPAPER_AUTOSTART,
+                writer_provider=Provider.HYPRLANG,
+            )
+            action()
+        except FileNotFoundError:
+            message = missing_program_message or t("Required wallpaper program not found.")
+            self.main_window.add_toast(Adw.Toast.new(message))
+        except Exception as e:
+            self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
+
+    def _on_image_selected(self, path: Path):
+        def apply_image():
+            self._stop_mpv()
             subprocess.Popen(["caelestia", "wallpaper", "-f", str(path)])
             _write_mpvpaper_autostart(None)
             self._current = str(path)
             self._img_grid.mark_current(self._current)
             self._show_banner(f"Wallpaper: {path.name}")
             self.main_window.add_toast(Adw.Toast.new(f"Wallpaper: {path.name}"))
-        except Exception as e:
-            self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
+
+        self._run_wallpaper_action(apply_image)
 
     def _on_video_selected(self, path: Path):
-        self._stop_mpv()
-        try:
+        def apply_video():
+            self._stop_mpv()
             self._mpv_proc = subprocess.Popen([
                 "mpvpaper", "*", str(path),
                 "-o", "loop --no-audio --panscan=1.0"
@@ -526,14 +540,17 @@ class WallpaperPage(Gtk.Box):
             self._vid_grid.mark_current(self._current)
             self._show_banner(f"Video-Wallpaper: {path.name}")
             self.main_window.add_toast(Adw.Toast.new(f"Video: {path.name}"))
-        except FileNotFoundError:
-            self.main_window.add_toast(
-                Adw.Toast.new(t("mpvpaper not found — yay -S mpvpaper"))
-            )
-        except Exception as e:
-            self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
+
+        self._run_wallpaper_action(
+            apply_video,
+            missing_program_message=t("mpvpaper not found — yay -S mpvpaper"),
+        )
 
     def _stop_mpv(self):
+        require_config_capability(
+            ConfigCapability.WALLPAPER_AUTOSTART,
+            writer_provider=Provider.HYPRLANG,
+        )
         if self._mpv_proc is not None:
             if self._mpv_proc.poll() is None:
                 self._mpv_proc.terminate()
@@ -554,14 +571,14 @@ class WallpaperPage(Gtk.Box):
     # ── Toolbar-Buttons ───────────────────────────────────────────────────
 
     def _on_random(self, _):
-        self._stop_mpv()
-        try:
+        def apply_random():
+            self._stop_mpv()
             subprocess.Popen(["caelestia", "wallpaper", "-r", str(_get_image_dir())])
             _write_mpvpaper_autostart(None)
             self._show_banner(t("Random wallpaper set"))
             self.main_window.add_toast(Adw.Toast.new(t("Random wallpaper set")))
-        except Exception as e:
-            self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
+
+        self._run_wallpaper_action(apply_random)
 
     def _on_mode_toggled(self, btn):
         mode = "light" if btn.get_active() else "dark"
