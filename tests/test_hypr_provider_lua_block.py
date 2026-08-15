@@ -133,6 +133,44 @@ class ManagedLuaBlockTest(unittest.TestCase):
         self.assertEqual(self.path.read_text(), "local x = (\n")
 
 
+class ManagedBlockByteRangeTest(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.path = Path(self._tmpdir.name) / "rules.lua"
+
+    def test_none_when_file_missing(self):
+        self.assertIsNone(hp.managed_block_byte_range(self.path, "window-rules"))
+
+    def test_none_when_block_missing(self):
+        self.path.write_text("-- just a comment\n")
+        self.assertIsNone(hp.managed_block_byte_range(self.path, "window-rules"))
+
+    def test_range_covers_exactly_the_content_lines(self):
+        hp.write_managed_lua_block(self.path, "window-rules", ["hl.window_rule({ a = 1 })"])
+        text = self.path.read_text()
+        rng = hp.managed_block_byte_range(self.path, "window-rules")
+        self.assertIsNotNone(rng)
+        start, end = rng
+        self.assertEqual(text[start:end], "hl.window_rule({ a = 1 })\n")
+
+    def test_range_excludes_manual_content_before_and_after(self):
+        self.path.write_text("-- manual header\n")
+        hp.write_managed_lua_block(self.path, "window-rules", ["hl.window_rule({ a = 1 })"])
+        text = self.path.read_text()
+        text = text + "-- manual footer\n"
+        self.path.write_text(text)
+        start, end = hp.managed_block_byte_range(self.path, "window-rules")
+        self.assertNotIn("manual header", text[start:end])
+        self.assertNotIn("manual footer", text[start:end])
+        self.assertIn("hl.window_rule", text[start:end])
+
+    def test_range_for_empty_block(self):
+        hp.write_managed_lua_block(self.path, "window-rules", [])
+        start, end = hp.managed_block_byte_range(self.path, "window-rules")
+        self.assertEqual(start, end)
+
+
 class ReloadHyprlandTest(unittest.TestCase):
     def test_success_returns_none(self):
         ok = mock.MagicMock()

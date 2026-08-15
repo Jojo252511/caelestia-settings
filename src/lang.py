@@ -128,6 +128,7 @@ TRANSLATIONS = {
     "Cancel": "Abbrechen",
     "Yes": "Ja",
     "No": "Nein",
+    "Error:": "Fehler:",
 
     # ── Hyprland config-provider transition (temporary, see issue #51) ──────
     "Hyprland configuration format": "Hyprland-Konfigurationsformat",
@@ -168,6 +169,16 @@ TRANSLATIONS = {
     "Web app": "Web-App",
     "Unknown class": "Unbekannte Klasse",
     "No windowrule entries found.": "Keine windowrule-Einträge gefunden.",
+    (
+        "All windowrule entries from {path}  –  🔒 manual  /  ⚙ managed by this app"
+    ): (
+        "Alle windowrule-Einträge aus {path}  –  🔒 manuell  /  ⚙ von dieser App verwaltet"
+    ),
+    (
+        "All hl.window_rule(...) entries from {path}  –  🔒 manual  /  ⚙ managed by this app"
+    ): (
+        "Alle hl.window_rule(...)-Einträge aus {path}  –  🔒 manuell  /  ⚙ von dieser App verwaltet"
+    ),
 
     # ── WLAN ──────────────────────────────────────────────────────────────
     "WLAN": "WLAN",

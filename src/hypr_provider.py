@@ -160,6 +160,28 @@ def _find_managed_block(lines: list[str], block_name: str) -> tuple[int, int] | 
     return b, e
 
 
+def managed_block_byte_range(path: Path, block_name: str) -> tuple[int, int] | None:
+    """Returns the (start, end) byte offsets of the named managed block's
+    *content* region in `path` — i.e. excluding the marker lines
+    themselves — or None if the file or the block doesn't exist.
+
+    Lets callers classify byte offsets found by some other scan of the
+    same file (e.g. `caelestia_core.find_lua_calls`) as inside or outside
+    the app-managed region, without re-implementing marker lookup.
+    """
+    if not path.exists():
+        return None
+    text = path.read_text()
+    kept_lines = text.splitlines(keepends=True)
+    markers = _find_managed_block([line.rstrip("\n") for line in kept_lines], block_name)
+    if markers is None:
+        return None
+    b, e = markers
+    start = sum(len(line) for line in kept_lines[: b + 1])
+    end = sum(len(line) for line in kept_lines[:e])
+    return start, end
+
+
 def read_managed_lua_block(path: Path, block_name: str) -> list[str]:
     """Returns the lines currently inside the named managed block in
     `path`, or `[]` if the file or the block doesn't exist yet."""

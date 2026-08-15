@@ -384,6 +384,24 @@ fn render_lua_call(path: &str, args: Vec<Bound<'_, PyAny>>) -> PyResult<String> 
     Ok(caelestia_core::lua::render_call(&path_parts, &lua_args))
 }
 
+/// `caelestia_core.find_lua_calls(input: str, func_name: str) -> list[tuple[int, int, str]]`
+///
+/// Scans `input` for every call to the dotted path `func_name` (e.g.
+/// `"hl.window_rule"`), tolerating arbitrary surrounding Lua this codec
+/// doesn't understand — never raises, an unparseable file just yields no
+/// matches. Each result is `(start_byte, end_byte, text)`; callers use
+/// the byte offsets to classify a match as inside/outside some other
+/// region of the file (e.g. an app-managed block found via
+/// `read_managed_lua_block`/`managed_block_byte_range`), and feed `text`
+/// into `parse_lua_call` to get a structured result.
+#[pyfunction]
+fn find_lua_calls(input: &str, func_name: &str) -> Vec<(usize, usize, String)> {
+    caelestia_core::lua::find_calls(input, func_name)
+        .into_iter()
+        .map(|(start, end, text)| (start, end, text.to_string()))
+        .collect()
+}
+
 // ---------------------------------------------------------------------
 // module registration
 // ---------------------------------------------------------------------
@@ -423,6 +441,7 @@ fn caelestia_core_pymodule(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(render_lua_table, m)?)?;
     m.add_function(wrap_pyfunction!(parse_lua_call, m)?)?;
     m.add_function(wrap_pyfunction!(render_lua_call, m)?)?;
+    m.add_function(wrap_pyfunction!(find_lua_calls, m)?)?;
 
     Ok(())
 }

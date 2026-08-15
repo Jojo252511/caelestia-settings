@@ -1,16 +1,26 @@
 import os
-import subprocess
 import threading
 from pathlib import Path
 from src.lang import t
 from gi.repository import Gtk, Adw, GLib
 from src.config import (
     load_window_rules_config, save_window_rules_config,
-    parse_monitors_conf, parse_rules_conf,
-    HYPR_RULES_CONF,
+    build_workspace_options, parse_monitors_conf, parse_rules_conf,
+    _fallback_ws_options, HYPR_RULES_CONF,
 )
+from src.hypr_provider import (
+    Provider,
+    load_provider,
+    managed_block_byte_range,
+    reload_hyprland,
+    resolve_path,
+    write_managed_lua_block,
+)
+from src.pages.workspaces import _load_workspaces as _load_workspaces_shared
 
 import caelestia_core
+
+WINDOW_RULES_LUA_BLOCK = "window-rules"
 
 FLOAT_OPTIONS = [
     ("default", t("Standard (no rule)")),
@@ -114,6 +124,125 @@ def _write_rules_conf(new_lines: list[str]):
         f.write("\n".join(new_lines) + "\n")
 
 
+# ── Lua provider ──────────────────────────────────────────────────────────
+#
+# rules.lua holds the app's own rules as hl.window_rule({...}) calls inside
+# the "window-rules" managed block, and may additionally contain manual,
+# hand-written hl.window_rule(...) calls anywhere else in the file — single-
+# or multi-line, mixed in with comments, loops, dynamic values
+# (vars.windowOpacity), other hl.* calls, and whatever else the user's Lua
+# config does. Reading therefore never assumes one call per line outside the
+# managed block: every hl.window_rule(...) in the whole file is located with
+# caelestia_core.find_lua_calls (a boundary scanner, not a full Lua parser —
+# see rust/caelestia-core/src/lua.rs), and each match is parsed
+# independently. A match that isn't a supported static shape (dynamic
+# values, unexpected fields, ...) is simply skipped: read-only, never
+# rewritten, and never a reason to abort loading the rest of the file.
+
+
+def _parse_window_rule_call(call_text: str, managed: bool) -> dict | None:
+    """Turns one hl.window_rule({...}) call's source text into the same
+    dict shape parse_rules_conf() produces, or None if it isn't one of the
+    static shapes this app itself writes (workspace or float, matched on
+    class or initial_title) — e.g. dynamic values, unsupported fields, or
+    a table shaped differently than expected."""
+    try:
+        path, args = caelestia_core.parse_lua_call(call_text)
+    except ValueError:
+        return None
+    if path != "hl.window_rule" or not args or not isinstance(args[0], dict):
+        return None
+    table = args[0]
+
+    match_table = table.get("match")
+    if not isinstance(match_table, dict):
+        return None
+    match_type = None
+    match_val = None
+    for candidate in ("class", "initial_title"):
+        value = match_table.get(candidate)
+        if isinstance(value, str):
+            match_type, match_val = candidate, value
+            break
+    if match_type is None:
+        return None
+
+    workspace = table.get("workspace")
+    float_val = table.get("float")
+    if isinstance(workspace, str):
+        rule = f"workspace {workspace}"
+    elif isinstance(float_val, bool):
+        rule = f"float {'true' if float_val else 'false'}"
+    else:
+        return None
+
+    return {
+        "rule":       rule,
+        "match_type": match_type,
+        "match_val":  match_val,
+        "raw":        call_text.strip(),
+        "managed":    managed,
+    }
+
+
+def _load_window_rules_lua() -> list[dict]:
+    path = resolve_path("rules", Provider.LUA)
+    if not path.exists():
+        return []
+    text = path.read_text()
+    byte_range = managed_block_byte_range(path, WINDOW_RULES_LUA_BLOCK)
+
+    result = []
+    for start, _end, call_text in caelestia_core.find_lua_calls(text, "hl.window_rule"):
+        managed = byte_range is not None and byte_range[0] <= start < byte_range[1]
+        rule = _parse_window_rule_call(call_text, managed)
+        if rule is not None:
+            result.append(rule)
+    return result
+
+
+def _load_existing_rules() -> list[dict]:
+    """Provider-aware replacement for calling parse_rules_conf() directly:
+    routes to the Lua reader under Provider.LUA, otherwise unchanged."""
+    if load_provider() is Provider.LUA:
+        return _load_window_rules_lua()
+    return parse_rules_conf()
+
+
+def _build_window_rule_lua_tables(key: str, settings: dict) -> list[dict]:
+    """Builds one or two hl.window_rule({...}) argument tables for a single
+    wm_class/initial_title rule. Two calls (not one combined table) when
+    both a workspace and a float behavior are set — mirroring how the
+    .conf provider already emits two separate `windowrule = ...` lines for
+    the same match in _generate_rules_lines, the lower-risk option that
+    keeps parsing, UI roundtrip, and this app's existing data model
+    unambiguous."""
+    match_type = settings.get("match_type", "class")
+    workspace = settings.get("workspace", "default")
+    float_val = settings.get("float", "default")
+
+    tables = []
+    if workspace != "default":
+        tables.append({"match": {match_type: key}, "workspace": workspace})
+    if float_val != "default":
+        tables.append({"match": {match_type: key}, "float": float_val == "true"})
+    return tables
+
+
+def _save_window_rules_lua(rules: dict) -> None:
+    """Renders every rule as hl.window_rule({...}) call(s) and safely
+    replaces the "window-rules" managed block in rules.lua. Raises
+    LuaWriteError (propagated from write_managed_lua_block) if the
+    generated file fails luac validation — the file on disk is then left
+    unchanged. An empty `rules` dict produces a valid, empty block."""
+    path = resolve_path("rules", Provider.LUA)
+    lines = []
+    for key, settings in rules.items():
+        for table in _build_window_rule_lua_tables(key, settings):
+            lines.append(caelestia_core.render_lua_call("hl.window_rule", [table]))
+    write_managed_lua_block(path, WINDOW_RULES_LUA_BLOCK, lines)
+
+
 # ── Haupt-Seite ──────────────────────────────────────────────────────────────
 
 class WindowRulesPage(Gtk.Box):
@@ -122,15 +251,23 @@ class WindowRulesPage(Gtk.Box):
         self.main_window = main_window
         self.set_orientation(Gtk.Orientation.VERTICAL)
 
-        # Workspace-Optionen dynamisch aus monitors.conf
-        mon_data = parse_monitors_conf()
-        self._workspace_options: list[tuple[str, str]] = mon_data["workspace_options"]
+        # Workspace-Optionen dynamisch aus dem aktiven Provider — Lua nutzt
+        # workspaces.py's eigene, bereits providerfähige Workspace-Liste aus
+        # M3 statt eines zweiten, unabhängigen Lua-Workspace-Parsers.
+        if load_provider() is Provider.LUA:
+            lua_workspaces = _load_workspaces_shared()
+            self._workspace_options: list[tuple[str, str]] = (
+                build_workspace_options(lua_workspaces) if lua_workspaces else _fallback_ws_options()
+            )
+        else:
+            mon_data = parse_monitors_conf()
+            self._workspace_options = mon_data["workspace_options"]
 
         # Lade gespeichertes JSON als Basis (diese werden beim Speichern geschrieben)
         self.saved_rules = load_window_rules_config()
 
-        # Bestehende rules.conf einlesen
-        self._existing_rules = parse_rules_conf()
+        # Bestehende Regeln providerabhängig einlesen (rules.conf / rules.lua)
+        self._existing_rules = _load_existing_rules()
 
         # Aus rules.conf gelesene Regeln NUR für Dropdown-Vorauswahl nutzen —
         # _imported_keys merkt sich welche Klassen NUR aus der rules.conf kommen,
@@ -284,31 +421,41 @@ class WindowRulesPage(Gtk.Box):
                 continue
             rules[key] = settings
 
-        save_window_rules_config(rules)
+        # Providerabhängig in die echte Hyprland-Konfiguration schreiben und
+        # live anwenden, BEVOR der lokale JSON-Cache aktualisiert wird — so
+        # kann der Cache nie einen Stand enthalten, der beim sicheren
+        # Config-Schreiben (Lua: luac-Validierung) oder beim Reload
+        # tatsächlich verworfen wurde.
+        provider = load_provider() or Provider.HYPRLANG
         try:
-            _write_rules_conf(_generate_rules_lines(rules))
-            subprocess.run(["hyprctl", "reload"], timeout=3)
-            self.main_window.add_toast(Adw.Toast.new(t("Rules saved and Hyprland reloaded.")))
-            self._existing_rules = parse_rules_conf()
-            self._refresh_existing_tab()
+            if provider is Provider.LUA:
+                _save_window_rules_lua(rules)
+            else:
+                _write_rules_conf(_generate_rules_lines(rules))
+            reload_hyprland()
         except Exception as e:
-            self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
-        finally:
+            self.main_window.add_toast(Adw.Toast.new(f"{t('Error:')} {e}"))
             btn.set_sensitive(True)
             btn.set_label(t("Save & Apply"))
+            return
+
+        save_window_rules_config(rules)
+        self.main_window.add_toast(Adw.Toast.new(t("Rules saved and Hyprland reloaded.")))
+        self._existing_rules = _load_existing_rules()
+        self._refresh_existing_tab()
+        btn.set_sensitive(True)
+        btn.set_label(t("Save & Apply"))
 
     # ── Tab 2 ─────────────────────────────────────────────────────────────────
 
     def _build_existing_tab(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        lbl = Gtk.Label()
-        lbl.set_markup(
-            "<small>All <b>windowrule</b> entries from <tt>rules.conf</tt>  "
-            "–  🔒 manual  /  ⚙ managed by this app</small>"
-        )
-        lbl.set_margin_top(10); lbl.set_margin_bottom(6); lbl.set_margin_start(12)
-        lbl.set_halign(Gtk.Align.START)
-        box.append(lbl)
+        self._existing_desc_label = Gtk.Label()
+        self._existing_desc_label.set_margin_top(10)
+        self._existing_desc_label.set_margin_bottom(6)
+        self._existing_desc_label.set_margin_start(12)
+        self._existing_desc_label.set_halign(Gtk.Align.START)
+        box.append(self._existing_desc_label)
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_vexpand(True)
@@ -322,6 +469,15 @@ class WindowRulesPage(Gtk.Box):
         return box
 
     def _refresh_existing_tab(self):
+        provider = load_provider() or Provider.HYPRLANG
+        rules_path = resolve_path("rules", provider)
+        desc = (
+            t("All hl.window_rule(...) entries from {path}  –  🔒 manual  /  ⚙ managed by this app")
+            if provider is Provider.LUA
+            else t("All windowrule entries from {path}  –  🔒 manual  /  ⚙ managed by this app")
+        )
+        self._existing_desc_label.set_markup(f"<small>{GLib.markup_escape_text(desc.format(path=rules_path))}</small>")
+
         # AdwPreferencesGroup erlaubt kein remove() auf seine Rows —
         # stattdessen die Group komplett ersetzen.
         parent = self._existing_group.get_parent()   # ScrolledWindow
@@ -331,8 +487,8 @@ class WindowRulesPage(Gtk.Box):
 
         if not self._existing_rules:
             new_group.add(Adw.ActionRow(
-                title="Keine windowrule-Einträge gefunden.",
-                subtitle=str(HYPR_RULES_CONF)
+                title=t("No windowrule entries found."),
+                subtitle=str(rules_path)
             ))
         else:
             for entry in self._existing_rules:

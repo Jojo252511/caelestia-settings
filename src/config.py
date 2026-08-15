@@ -92,8 +92,26 @@ def parse_monitors_conf() -> dict:
 
     workspaces.sort(key=lambda w: w["number"])
 
+    return {
+        "monitors": monitors,
+        "workspaces": workspaces,
+        "workspace_options": build_workspace_options(workspaces),
+    }
+
+
+def build_workspace_options(workspaces: list) -> list:
+    """Builds the (id, label) workspace dropdown options: a leading "no
+    rule" entry, one per workspace (starred if default), then the fixed
+    special workspaces.
+
+    Shared so this list only exists once: parse_monitors_conf() (.conf
+    provider) calls it with .conf-derived workspaces, and
+    src.pages.window_rules calls it with the Lua provider's
+    hl.workspace_rule(...) data from src.pages.workspaces, instead of a
+    second independent workspace-options builder.
+    """
     ws_options = [("default", t("Standard (no rule)"))]
-    for ws in workspaces:
+    for ws in sorted(workspaces, key=lambda w: w["number"]):
         label = f"WS {ws['number']}  –  {ws['monitor']}" if ws["monitor"] else f"Workspace {ws['number']}"
         if ws["default"]:
             label += "  ★"
@@ -102,7 +120,7 @@ def parse_monitors_conf() -> dict:
     for sp in ["sysmon", "music", "communication", "todo", "scratch"]:
         ws_options.append((f"special:{sp}", f"Special: {sp}"))
 
-    return {"monitors": monitors, "workspaces": workspaces, "workspace_options": ws_options}
+    return ws_options
 
 
 def _fallback_ws_options() -> list:

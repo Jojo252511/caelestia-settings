@@ -73,11 +73,24 @@ enum Token {
     True,
     False,
     Nil,
+    /// Lenient-mode only: one character of Lua syntax this codec doesn't
+    /// understand (operators, `local`/`function`/`end`, string
+    /// concatenation, ...). Never produced in strict mode — there it's a
+    /// hard `LuaError` instead. Carries no data because [`find_calls`]
+    /// only needs to know call-boundary structure (parens/braces), not
+    /// what this filler actually was.
+    Other,
 }
 
 struct Lexer<'a> {
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
     src: &'a str,
+    /// Strict (the default, used by `parse_value`/`parse_call` on an
+    /// already-isolated fragment): any unrecognized syntax is a hard
+    /// error. Lenient (used by `find_calls` to scan a whole file that may
+    /// contain arbitrary Lua around the calls we care about): unrecognized
+    /// syntax becomes `Token::Other` and scanning continues.
+    strict: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -85,81 +98,142 @@ impl<'a> Lexer<'a> {
         Self {
             chars: src.char_indices().peekable(),
             src,
+            strict: true,
         }
     }
 
-    fn tokenize(mut self) -> Result<Vec<Token>, LuaError> {
+    fn new_lenient(src: &'a str) -> Self {
+        Self {
+            chars: src.char_indices().peekable(),
+            src,
+            strict: false,
+        }
+    }
+
+    /// Same tokenization as `tokenize`, but keeps each token's byte span
+    /// so callers can slice the original source (needed by `find_calls`
+    /// to recover exact call text, including multi-line tables).
+    fn tokenize_spanned(mut self) -> Result<Vec<(Token, usize, usize)>, LuaError> {
         let mut tokens = Vec::new();
         loop {
-            self.skip_ws_and_comments()?;
-            let Some(&(pos, c)) = self.chars.peek() else {
+            if let Err(e) = self.skip_ws_and_comments() {
+                if self.strict {
+                    return Err(e);
+                }
+                // Lenient: e.g. an unterminated `--[[` block comment later
+                // in the file. Stop scanning rather than discarding every
+                // valid token already found before it.
+                break;
+            }
+            let Some(&(start, c)) = self.chars.peek() else {
                 break;
             };
-            match c {
+            let token = match c {
                 '{' => {
                     self.chars.next();
-                    tokens.push(Token::LBrace);
+                    Some(Token::LBrace)
                 }
                 '}' => {
                     self.chars.next();
-                    tokens.push(Token::RBrace);
+                    Some(Token::RBrace)
                 }
                 '[' => {
                     self.chars.next();
-                    tokens.push(Token::LBracket);
+                    Some(Token::LBracket)
                 }
                 ']' => {
                     self.chars.next();
-                    tokens.push(Token::RBracket);
+                    Some(Token::RBracket)
                 }
                 '(' => {
                     self.chars.next();
-                    tokens.push(Token::LParen);
+                    Some(Token::LParen)
                 }
                 ')' => {
                     self.chars.next();
-                    tokens.push(Token::RParen);
+                    Some(Token::RParen)
                 }
                 ',' => {
                     self.chars.next();
-                    tokens.push(Token::Comma);
+                    Some(Token::Comma)
                 }
                 '=' => {
                     self.chars.next();
-                    tokens.push(Token::Eq);
+                    Some(Token::Eq)
                 }
-                '.' if !self.next_is_digit_after_dot() => {
+                '.' => {
                     self.chars.next();
-                    tokens.push(Token::Dot);
+                    Some(Token::Dot)
                 }
-                '"' | '\'' => tokens.push(Token::Str(self.read_string(c)?)),
-                c if c == '-' || c.is_ascii_digit() => {
-                    tokens.push(Token::Number(self.read_number()?))
+                '"' | '\'' => match self.read_string(c) {
+                    Ok(s) => Some(Token::Str(s)),
+                    Err(e) => {
+                        if self.strict {
+                            return Err(e);
+                        }
+                        // Lenient: an unterminated string later in the file
+                        // must not swallow the rest of the scan as "inside
+                        // a string" — treat just the opening quote as
+                        // filler and keep going from the next character.
+                        Some(Token::Other)
+                    }
+                },
+                c if c.is_ascii_digit() || (c == '-' && self.peek_next_is_digit()) => {
+                    match self.read_number() {
+                        Ok(n) => Some(Token::Number(n)),
+                        Err(e) => {
+                            if self.strict {
+                                return Err(e);
+                            }
+                            self.chars.next();
+                            Some(Token::Other)
+                        }
+                    }
                 }
                 c if c.is_alphabetic() || c == '_' => {
                     let ident = self.read_ident();
-                    tokens.push(match ident.as_str() {
+                    Some(match ident.as_str() {
                         "true" => Token::True,
                         "false" => Token::False,
                         "nil" => Token::Nil,
                         _ => Token::Ident(ident),
-                    });
+                    })
                 }
-                other => {
-                    return Err(LuaError(format!(
-                        "unexpected character {other:?} at byte {pos}"
-                    )));
+                _ => {
+                    if self.strict {
+                        return Err(LuaError(format!(
+                            "unexpected character {c:?} at byte {start}"
+                        )));
+                    }
+                    self.chars.next();
+                    Some(Token::Other)
                 }
+            };
+            if let Some(tok) = token {
+                let end = self.chars.peek().map(|&(p, _)| p).unwrap_or(self.src.len());
+                tokens.push((tok, start, end));
             }
         }
         Ok(tokens)
     }
 
-    fn next_is_digit_after_dot(&mut self) -> bool {
-        // A bare '.' is only ever punctuation (`hl.monitor`) in the syntax
-        // this codec supports — leading-dot numbers like `.5` never appear
-        // in the target examples, so treat every '.' as Token::Dot.
-        false
+    fn tokenize(self) -> Result<Vec<Token>, LuaError> {
+        Ok(self
+            .tokenize_spanned()?
+            .into_iter()
+            .map(|(t, _, _)| t)
+            .collect())
+    }
+
+    /// Looks past a `-` (without consuming it) to decide whether it starts
+    /// a negative number literal or is standalone syntax (subtraction,
+    /// concatenation-adjacent, ...). `Peekable` only gives one token of
+    /// lookahead, so a cheap clone of the (index-based) iterator stands in
+    /// for a second one.
+    fn peek_next_is_digit(&self) -> bool {
+        let mut ahead = self.chars.clone();
+        ahead.next();
+        matches!(ahead.peek(), Some((_, c)) if c.is_ascii_digit())
     }
 
     fn skip_ws_and_comments(&mut self) -> Result<(), LuaError> {
@@ -446,6 +520,95 @@ pub fn parse_call(input: &str) -> Result<LuaCall, LuaError> {
         return Err(LuaError("unexpected trailing content after call".into()));
     }
     Ok(call)
+}
+
+/// Finds every occurrence of a call to the dotted path `func_name` (e.g.
+/// `"hl.window_rule"`) anywhere in `input`, tolerating arbitrary
+/// surrounding Lua this codec doesn't understand — loops, `local`
+/// declarations, string concatenation, other function calls, comments,
+/// unrelated identifiers that merely happen to contain the same
+/// substrings, and so on. None of that aborts the scan; unrecognized
+/// syntax is simply inert filler.
+///
+/// Returns each match's byte span `(start, end)` — covering the full
+/// `name(...)` text, including a nested table that spans multiple lines —
+/// together with that exact source slice. This performs NO semantic
+/// validation of the call itself: feed each returned text into
+/// [`parse_call`] to get a structured result, and treat a `parse_call`
+/// error on one match as "this particular call is unsupported", never as
+/// a reason to discard the others or abort the caller's load.
+///
+/// A call whose parentheses are never closed (truncated/malformed input)
+/// is simply not reported.
+pub fn find_calls<'a>(input: &'a str, func_name: &str) -> Vec<(usize, usize, &'a str)> {
+    let path: Vec<&str> = func_name.split('.').filter(|s| !s.is_empty()).collect();
+    if path.is_empty() {
+        return Vec::new();
+    }
+    let tokens = match Lexer::new_lenient(input).tokenize_spanned() {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if let Some((start, end, next_i)) = match_call_at(&tokens, i, &path) {
+            spans.push((start, end, &input[start..end]));
+            i = next_i;
+        } else {
+            i += 1;
+        }
+    }
+    spans
+}
+
+/// Attempts to match `path` (e.g. `["hl", "window_rule"]`) as a dotted
+/// call starting exactly at token index `i`. On success returns the
+/// call's `(start_byte, end_byte, index_of_first_token_after_call)`.
+fn match_call_at(
+    tokens: &[(Token, usize, usize)],
+    i: usize,
+    path: &[&str],
+) -> Option<(usize, usize, usize)> {
+    let mut j = i;
+    for (k, seg) in path.iter().enumerate() {
+        if k > 0 {
+            match tokens.get(j)? {
+                (Token::Dot, _, _) => j += 1,
+                _ => return None,
+            }
+        }
+        match tokens.get(j)? {
+            (Token::Ident(name), _, _) if name == seg => j += 1,
+            _ => return None,
+        }
+    }
+    match tokens.get(j)? {
+        (Token::LParen, _, _) => {}
+        _ => return None,
+    }
+
+    let start = tokens[i].1;
+    let mut depth = 0i32;
+    let mut k = j;
+    loop {
+        match tokens.get(k)? {
+            (Token::LParen, _, _) => {
+                depth += 1;
+                k += 1;
+            }
+            (Token::RParen, _, end) => {
+                depth -= 1;
+                let end = *end;
+                k += 1;
+                if depth == 0 {
+                    return Some((start, end, k));
+                }
+            }
+            _ => k += 1,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -778,5 +941,119 @@ mod tests {
             let v2 = parse_value(&rendered).unwrap();
             assert_eq!(v1, v2, "roundtrip mismatch for {src:?}");
         }
+    }
+
+    // ── find_calls ─────────────────────────────────────────────────────
+
+    #[test]
+    fn finds_single_line_call() {
+        let src = r#"hl.window_rule({ match = { class = "kitty" }, workspace = "2" })"#;
+        let spans = find_calls(src, "hl.window_rule");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].2, src);
+        assert_eq!(&src[spans[0].0..spans[0].1], src);
+    }
+
+    #[test]
+    fn finds_multiline_call() {
+        let src =
+            "hl.window_rule({\n    match = { class = \"kitty\" },\n    workspace = \"2\",\n})";
+        let spans = find_calls(src, "hl.window_rule");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].2, src);
+        let call = parse_call(spans[0].2).unwrap();
+        assert_eq!(call.path, vec!["hl", "window_rule"]);
+    }
+
+    #[test]
+    fn finds_multiple_calls_amid_unsupported_lua() {
+        let src = r#"
+local x = 1 + 2
+-- a comment
+hl.window_rule({ match = { class = "kitty" }, workspace = "2" })
+if x > 1 then
+    hl.exec_cmd("echo hi")
+end
+hl.window_rule({ match = { class = "firefox" }, float = true })
+"#;
+        let spans = find_calls(src, "hl.window_rule");
+        assert_eq!(spans.len(), 2);
+        assert!(spans[0].2.contains("kitty"));
+        assert!(spans[1].2.contains("firefox"));
+    }
+
+    #[test]
+    fn tolerates_string_concatenation_and_operators_elsewhere() {
+        let src = r#"
+local msg = "a" .. "b"
+local y = 5 % 2
+hl.window_rule({ match = { class = "kitty" }, workspace = "2" })
+"#;
+        let spans = find_calls(src, "hl.window_rule");
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn does_not_match_unrelated_identifier_containing_substring() {
+        let src = r#"hl.window_rule_backup({ match = { class = "kitty" }, workspace = "2" })"#;
+        assert!(find_calls(src, "hl.window_rule").is_empty());
+    }
+
+    #[test]
+    fn does_not_match_shorter_prefix_path() {
+        let src = r#"hl.window_rule.extra({ x = 1 })"#;
+        // "hl.window_rule" must not spuriously match when followed by more
+        // path segments instead of an opening paren.
+        assert!(find_calls(src, "hl.window_rule").is_empty());
+    }
+
+    #[test]
+    fn unterminated_call_is_not_reported() {
+        let src = r#"hl.window_rule({ match = { class = "kitty" }, workspace = "2" }"#; // missing final )
+        assert!(find_calls(src, "hl.window_rule").is_empty());
+    }
+
+    #[test]
+    fn unterminated_string_elsewhere_does_not_abort_the_whole_scan() {
+        let src = "hl.window_rule({ match = { class = \"kitty\" }, workspace = \"2\" })\nlocal bad = \"unterminated";
+        let spans = find_calls(src, "hl.window_rule");
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn unterminated_block_comment_after_a_valid_call_keeps_that_call() {
+        let src = "hl.window_rule({ match = { class = \"kitty\" }, workspace = \"2\" })\n--[[ never closed";
+        let spans = find_calls(src, "hl.window_rule");
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn no_calls_returns_empty_not_error() {
+        assert!(find_calls("local x = 1", "hl.window_rule").is_empty());
+        assert!(find_calls("", "hl.window_rule").is_empty());
+    }
+
+    #[test]
+    fn each_matched_span_parses_as_a_valid_call() {
+        let src = r#"
+hl.window_rule({ match = { initial_title = "Spotify( Free)?" }, workspace = "special:music" })
+"#;
+        let spans = find_calls(src, "hl.window_rule");
+        assert_eq!(spans.len(), 1);
+        let call = parse_call(spans[0].2).unwrap();
+        let LuaValue::Table(entries) = &call.args[0] else {
+            panic!("expected table arg")
+        };
+        let match_table = entries
+            .iter()
+            .find(|(k, _)| k.as_deref() == Some("match"))
+            .unwrap();
+        assert_eq!(
+            match_table.1,
+            table(vec![(
+                "initial_title",
+                LuaValue::Str("Spotify( Free)?".into())
+            )])
+        );
     }
 }
