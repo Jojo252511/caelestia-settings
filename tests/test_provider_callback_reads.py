@@ -150,15 +150,27 @@ class ProviderDependentReadTest(unittest.TestCase):
         self.keybinds_conf.write_text("bind = SUPER, T, exec, kitty\n")
         self.variables_conf.write_text("$mainMod = SUPER\n")
 
-    def test_none_and_lua_read_paths_do_not_touch_legacy_targets(self):
-        for provider in (None, hp.Provider.LUA):
-            with self.subTest(provider=provider), mock.patch.object(Path, "exists") as exists, mock.patch.object(
-                Path, "read_text"
-            ) as read_text:
-                self.assertEqual(general.read_input_conf(provider), {})
-                self.assertEqual(keybinds.parse_keybinds(provider), [])
-                exists.assert_not_called()
-                read_text.assert_not_called()
+    def test_none_read_path_does_not_touch_any_config(self):
+        with mock.patch.object(Path, "exists") as exists, mock.patch.object(Path, "read_text") as read_text:
+            self.assertEqual(general.read_input_conf(None), {})
+            self.assertEqual(keybinds.parse_keybinds(None), [])
+        exists.assert_not_called()
+        read_text.assert_not_called()
+
+    def test_lua_read_path_never_touches_legacy_input_conf(self):
+        # kb_layout/numlock_by_default became Lua-available as of M5, so
+        # under Provider.LUA the app's own (real, but nonexistent, so
+        # harmless) input.lua path IS checked for existence — but the
+        # legacy .conf format (read via Path.read_text) must never be
+        # touched by any provider, including Lua.
+        lua_input_path = Path(self._tmpdir.name) / "input.lua"
+        with (
+            mock.patch.dict(hp.LUA_PATHS, {"input": lua_input_path}),
+            mock.patch.object(Path, "read_text") as read_text,
+        ):
+            self.assertEqual(general.read_input_conf(hp.Provider.LUA), {})
+            self.assertEqual(keybinds.parse_keybinds(hp.Provider.LUA), [])
+        read_text.assert_not_called()
 
     def test_hyprlang_read_paths_load_legacy_values(self):
         with (
@@ -171,29 +183,50 @@ class ProviderDependentReadTest(unittest.TestCase):
         self.assertEqual(len(binds), 1)
         self.assertEqual(binds[0]["key_raw"], "T")
 
-    def test_pages_stay_neutral_for_none_and_lua(self):
+    def test_keybinds_page_stays_neutral_for_none_and_lua(self):
+        # Keybinds are not Lua-available until M7, so both providers must
+        # still leave this page neutral.
         for provider in (None, hp.Provider.LUA):
             with self.subTest(provider=provider):
-                general_page = types.SimpleNamespace(
-                    layout_combo=mock.MagicMock(),
-                    numlock_row=mock.MagicMock(),
-                    lang_combo=mock.MagicMock(),
-                    time_combo=mock.MagicMock(),
-                    is_loading=False,
-                    _load_all=mock.MagicMock(),
-                )
-                general_page._set_neutral_state = types.MethodType(general.GeneralPage._set_neutral_state, general_page)
-                loaded = general.GeneralPage.load_if_available(general_page, provider)
-                self.assertFalse(loaded)
-                general_page._load_all.assert_not_called()
-                general_page.layout_combo.set_active.assert_called_once_with(-1)
-
                 keybind_page = types.SimpleNamespace(_all_binds=[{"stale": True}], _filter=mock.MagicMock())
                 keybind_page._load = mock.MagicMock()
                 loaded = keybinds.KeybindsPage.load_if_available(keybind_page, provider)
                 self.assertFalse(loaded)
                 self.assertEqual(keybind_page._all_binds, [])
                 keybind_page._load.assert_not_called()
+
+    def test_general_page_stays_neutral_without_a_provider(self):
+        general_page = types.SimpleNamespace(
+            layout_combo=mock.MagicMock(),
+            numlock_row=mock.MagicMock(),
+            lang_combo=mock.MagicMock(),
+            time_combo=mock.MagicMock(),
+            is_loading=False,
+            _load_all=mock.MagicMock(),
+        )
+        general_page._set_neutral_state = types.MethodType(general.GeneralPage._set_neutral_state, general_page)
+        loaded = general.GeneralPage.load_if_available(general_page, None)
+        self.assertFalse(loaded)
+        general_page._load_all.assert_not_called()
+        general_page.layout_combo.set_active.assert_called_once_with(-1)
+
+    def test_general_page_loads_under_lua_as_of_m5(self):
+        # input.kb_layout / input.numlock_by_default became Lua-available
+        # in M5, so unlike the None case above, Provider.LUA now unlocks
+        # and loads the General page instead of staying neutral.
+        general_page = types.SimpleNamespace(
+            layout_combo=mock.MagicMock(),
+            numlock_row=mock.MagicMock(),
+            lang_combo=mock.MagicMock(),
+            time_combo=mock.MagicMock(),
+            is_loading=False,
+            _load_all=mock.MagicMock(),
+        )
+        general_page._set_neutral_state = types.MethodType(general.GeneralPage._set_neutral_state, general_page)
+        loaded = general.GeneralPage.load_if_available(general_page, hp.Provider.LUA)
+        self.assertTrue(loaded)
+        general_page._load_all.assert_called_once_with(hp.Provider.LUA)
+        general_page.layout_combo.set_active.assert_not_called()
 
     def test_hyprlang_page_refreshes_load_both_legacy_areas(self):
         general_page = types.SimpleNamespace(_load_all=mock.MagicMock())
@@ -242,10 +275,16 @@ class ProviderDependentReadTest(unittest.TestCase):
         main_window.keybinds_page.on_provider_changed.assert_not_called()
 
     def test_persisted_provider_routes_initial_reads(self):
+        # input.lua is patched to a nonexistent temp path so the LUA case
+        # deterministically resolves "not statically known" (-> None)
+        # instead of depending on whatever real ~/.config/hypr/hyprland/
+        # input.lua happens to contain on the machine running this test.
+        lua_input_path = Path(self._tmpdir.name) / "input.lua"
         with (
             mock.patch.object(general, "HYPR_INPUT_CONF", self.input_conf),
             mock.patch.object(keybinds, "KEYBINDS_CONF", self.keybinds_conf),
             mock.patch.object(keybinds, "VARIABLES_CONF", self.variables_conf),
+            mock.patch.dict(hp.LUA_PATHS, {"input": lua_input_path}),
         ):
             for provider, expected_layout, expected_bind_count in (
                 (None, None, 0),

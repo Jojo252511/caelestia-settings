@@ -59,9 +59,8 @@ class ProviderPageAccessTest(unittest.TestCase):
         access = window.provider_page_access(hp.Provider.LUA)
         self.assertEqual(
             {name for name, available in access.items() if available},
-            {"monitor", "workspaces", "window-rules"},
+            {"monitor", "workspaces", "window-rules", "general"},
         )
-        self.assertFalse(access["general"])
         self.assertFalse(access["keybinds"])
         self.assertFalse(access["wallpaper"])
 

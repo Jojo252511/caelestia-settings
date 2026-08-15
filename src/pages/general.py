@@ -1,5 +1,6 @@
 import re
 import subprocess
+import caelestia_core
 from gi.repository import Gtk, Adw
 from src.config import HYPR_INPUT_CONF
 from src.hypr_provider import (
@@ -7,9 +8,15 @@ from src.hypr_provider import (
     Provider,
     capability_available,
     load_provider,
+    managed_block_byte_range,
+    read_managed_lua_block,
     require_config_capability,
+    resolve_path,
+    write_managed_lua_block_and_reload,
 )
 from src.lang import t
+
+INPUT_LUA_BLOCK = "input"
 
 # Gängige Tastaturlayouts: (xkb-Code, Anzeigename)
 KEYBOARD_LAYOUTS = [
@@ -115,6 +122,104 @@ KEYBOARD_LAYOUTS = [
 _PROVIDER_UNSET = object()
 
 
+# ── Lua provider ──────────────────────────────────────────────────────────
+#
+# input.lua may contain manual, hand-written hl.config({ input = {...} })
+# calls anywhere in the file — single- or multi-line, mixed with comments,
+# other top-level sections (general, decoration, ...), and other input
+# fields this app doesn't own (touchpad, sensitivity, ...). Hyprland itself
+# applies whichever static assignment of a field appears LAST in the file,
+# so reading mirrors that: every hl.config(...) call is located with
+# caelestia_core.find_lua_calls and scanned in file order, and the last
+# statically-known value per field wins. A call (or a single field within
+# one) that isn't a supported static shape is simply skipped — read-only,
+# never rewritten, never a reason to abort reading the rest of the file.
+#
+# The app's own writes only ever touch a single hl.config({ input = {...} })
+# call inside the "input" managed block. When only one of the two fields
+# changes, the other field's value is taken from the app's OWN managed
+# block (never from some other manual call elsewhere in the file) so a
+# partial update never adopts or overwrites content it doesn't own.
+
+
+def _merge_static_input_calls(text: str) -> dict:
+    """Scans `text` for every hl.config({ input = {...} }) call and returns
+    the last statically-known value per input field, in file order — later
+    static assignments win; dynamic/unsupported values for a field simply
+    don't produce an assignment and leave any earlier value in place."""
+    result: dict = {}
+    for _start, _end, call_text in caelestia_core.find_lua_calls(text, "hl.config"):
+        try:
+            call_path, args = caelestia_core.parse_lua_call(call_text)
+        except ValueError:
+            continue
+        if call_path != "hl.config" or not args or not isinstance(args[0], dict):
+            continue
+        input_table = args[0].get("input")
+        if not isinstance(input_table, dict):
+            continue
+        if isinstance(input_table.get("kb_layout"), str):
+            result["kb_layout"] = input_table["kb_layout"]
+        if isinstance(input_table.get("numlock_by_default"), bool):
+            result["numlock_by_default"] = input_table["numlock_by_default"]
+    return result
+
+
+def _read_own_managed_input_fields() -> dict:
+    """Native-typed {kb_layout, numlock_by_default} currently inside the
+    app's own "input" managed block only (not the whole file) — the safe
+    source of truth a partial write must preserve for the field it isn't
+    currently changing. Propagates ManagedBlockError if the block's own
+    marker structure is corrupted, rather than silently ignoring it."""
+    path = resolve_path("input", Provider.LUA)
+    lines = read_managed_lua_block(path, INPUT_LUA_BLOCK)
+    if not lines:
+        return {}
+    return _merge_static_input_calls("\n".join(lines))
+
+
+def _read_input_lua() -> dict:
+    """Effective (whole-file, last-static-assignment-wins) input.kb_layout /
+    input.numlock_by_default as strings, matching the legacy dict contract
+    of read_input_conf(). A field is simply absent when it can't be
+    statically determined anywhere in the file — callers must not guess a
+    default on its behalf."""
+    path = resolve_path("input", Provider.LUA)
+    if not path.exists():
+        return {}
+    text = path.read_bytes().decode("utf-8")
+    # Validates marker structure as a side effect (raises ManagedBlockError
+    # on a corrupted managed block) — the byte range itself isn't needed
+    # since effective values are resolved across the whole file.
+    managed_block_byte_range(path, INPUT_LUA_BLOCK)
+    fields = _merge_static_input_calls(text)
+    result = {}
+    if "kb_layout" in fields:
+        result["kb_layout"] = fields["kb_layout"]
+    if "numlock_by_default" in fields:
+        result["numlock_by_default"] = "true" if fields["numlock_by_default"] else "false"
+    return result
+
+
+def _write_input_lua_field(key: str, value) -> None:
+    """Sets a single input.* field (kb_layout: str, numlock_by_default:
+    bool) in the app's managed hl.config({...}) call inside input.lua,
+    preserving whatever value the OTHER field already had in the app's own
+    managed block — never a guessed default, never a value adopted from
+    some other manual call elsewhere in the file."""
+    require_config_capability(ConfigCapability.INPUT, writer_provider=Provider.LUA)
+    path = resolve_path("input", Provider.LUA)
+    fields = _read_own_managed_input_fields()
+    fields[key] = value
+    ordered = {}
+    if "kb_layout" in fields:
+        ordered["kb_layout"] = fields["kb_layout"]
+    if "numlock_by_default" in fields:
+        ordered["numlock_by_default"] = fields["numlock_by_default"]
+    line = caelestia_core.render_lua_call("hl.config", [{"input": ordered}])
+    write_managed_lua_block_and_reload(path, INPUT_LUA_BLOCK, [line])
+
+
 def read_input_conf(provider: Provider | None | object = _PROVIDER_UNSET) -> dict:
     """Liest input.conf und gibt ein Dict mit allen key=value zurück."""
     result = {}
@@ -122,6 +227,8 @@ def read_input_conf(provider: Provider | None | object = _PROVIDER_UNSET) -> dic
         provider = load_provider()
     if not capability_available(provider, ConfigCapability.INPUT):
         return result
+    if provider is Provider.LUA:
+        return _read_input_lua()
     if not HYPR_INPUT_CONF.exists():
         return result
     try:
@@ -197,8 +304,8 @@ class GeneralPage(Gtk.Box):
 
         # NumLock
         self.numlock_row = Adw.SwitchRow(
-            title="NumLock beim Start aktivieren",
-            subtitle="numlock_by_default in input.conf"
+            title=t("NumLock on startup"),
+            subtitle=t("Live change in Hyprland"),
         )
         input_group.add(self.numlock_row)
 
@@ -314,9 +421,15 @@ class GeneralPage(Gtk.Box):
         lang = combo.get_active_id()
         if not lang: return
         try:
-            require_config_capability(ConfigCapability.INPUT, writer_provider=Provider.HYPRLANG)
-            _write_input_conf_key("kb_layout", lang)
-            subprocess.run(["hyprctl", "keyword", "input:kb_layout", lang], check=True)
+            if load_provider() is Provider.LUA:
+                # Write first, then reload — under Lua there is no
+                # per-field `hyprctl keyword input:...` (fails outright
+                # under the Lua provider).
+                _write_input_lua_field("kb_layout", lang)
+            else:
+                require_config_capability(ConfigCapability.INPUT, writer_provider=Provider.HYPRLANG)
+                _write_input_conf_key("kb_layout", lang)
+                subprocess.run(["hyprctl", "keyword", "input:kb_layout", lang], check=True)
             self.show_toast(f"Tastaturlayout: {lang.upper()}")
         except Exception as e:
             self.show_toast(f"Fehler: {e}")
@@ -325,9 +438,12 @@ class GeneralPage(Gtk.Box):
         if self.is_loading: return
         val = "true" if row.get_active() else "false"
         try:
-            require_config_capability(ConfigCapability.INPUT, writer_provider=Provider.HYPRLANG)
-            _write_input_conf_key("numlock_by_default", val)
-            subprocess.run(["hyprctl", "keyword", "input:numlock_by_default", val], check=True)
+            if load_provider() is Provider.LUA:
+                _write_input_lua_field("numlock_by_default", row.get_active())
+            else:
+                require_config_capability(ConfigCapability.INPUT, writer_provider=Provider.HYPRLANG)
+                _write_input_conf_key("numlock_by_default", val)
+                subprocess.run(["hyprctl", "keyword", "input:numlock_by_default", val], check=True)
             self.show_toast(f"NumLock: {val}")
         except Exception as e:
             self.show_toast(f"Fehler: {e}")

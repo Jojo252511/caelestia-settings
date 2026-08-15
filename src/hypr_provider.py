@@ -68,6 +68,7 @@ _LUA_CAPABILITIES = {
     ConfigCapability.MONITORS,
     ConfigCapability.WORKSPACES,
     ConfigCapability.WINDOW_RULES,
+    ConfigCapability.INPUT,
 }
 
 _CAPABILITY_LABELS = {

@@ -47,7 +47,6 @@ TRANSLATIONS = {
     "Timezone set successfully.": "Zeitzone erfolgreich gesetzt.",
     "Timezone change cancelled.": "Zeitzonenänderung abgebrochen.",
     "NumLock on startup": "NumLock beim Start aktivieren",
-    "numlock_by_default in input.conf": "numlock_by_default in input.conf",
 
     # ── Monitor ───────────────────────────────────────────────────────────
     "Monitor": "Monitor",
