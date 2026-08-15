@@ -488,7 +488,10 @@ class ExistingTabProviderPathTest(unittest.TestCase):
             wr.WindowRulesPage._refresh_existing_tab(page)
         resolve_mock.assert_not_called()
         markup = page._existing_desc_label.set_markup.call_args[0][0]
-        self.assertIn("provider dialog", markup)
+        expected = wr.GLib.markup_escape_text(
+            wr.t("Choose Yes or No in the provider dialog before reading configuration.")
+        )
+        self.assertEqual(markup, f"<small>{expected}</small>")
 
     def test_uses_conf_path_under_hyprlang_provider(self):
         page = self._make_page()
