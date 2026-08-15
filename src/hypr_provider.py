@@ -381,7 +381,7 @@ def _rollback_and_reload(
     existed: bool,
     original: bytes,
     written: bytes,
-    first_error: RuntimeError,
+    first_error: Exception,
 ) -> None:
     current = path.read_bytes() if path.exists() else b""
     if current != written:
@@ -537,7 +537,9 @@ def update_managed_lua_block_and_reload(
     time out against itself).
 
     `verify`, if given, is called once immediately after a successful
-    reload. If it raises `RuntimeError` — e.g. because the reloaded
+    reload. If it raises ANY `Exception` — not just `RuntimeError`; a
+    verifier is caller-supplied and may fail with `ValueError`,
+    `TypeError`, or anything else, e.g. because the reloaded
     configuration's live, observed effect doesn't match what was just
     written (a later manual entry elsewhere in the file could still be
     taking priority) — the write is treated exactly like a failed reload:
@@ -545,7 +547,10 @@ def update_managed_lua_block_and_reload(
     time, and the original error propagates. This lets a caller confirm a
     write actually took effect, not just that Hyprland accepted the
     config syntactically, under the same transaction and lock as the
-    write itself.
+    write itself. `BaseException` subclasses that aren't `Exception`
+    (`KeyboardInterrupt`, `SystemExit`, ...) are deliberately NOT caught
+    here — they propagate immediately, without a rollback attempt, exactly
+    like any other unguarded code in this process.
     """
     luac = shutil.which("luac")
     if luac is None:
@@ -578,7 +583,7 @@ def update_managed_lua_block_and_reload(
             reload_hyprland()
             if verify is not None:
                 verify()
-        except RuntimeError as first_error:
+        except Exception as first_error:
             _rollback_and_reload(
                 path,
                 existed=existed,

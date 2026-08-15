@@ -47,6 +47,7 @@ TRANSLATIONS = {
     "Timezone set successfully.": "Zeitzone erfolgreich gesetzt.",
     "Timezone change cancelled.": "Zeitzonenänderung abgebrochen.",
     "NumLock on startup": "NumLock beim Start aktivieren",
+    "Current state unknown": "Aktueller Zustand unbekannt",
     "{field} was written and Hyprland reloaded, but the change is not "
     "effective — a later configuration entry may be overriding it.": (
         "{field} wurde geschrieben und Hyprland neu geladen, aber die Änderung ist nicht wirksam "

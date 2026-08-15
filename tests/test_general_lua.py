@@ -129,6 +129,57 @@ class EffectiveNumlockTest(unittest.TestCase):
         with mock.patch.object(general, "_hyprctl_getoption", return_value={"option": "input:numlock_by_default"}):
             self.assertIsNone(general._get_effective_numlock())
 
+    # ── M5.2: exact int typing (JSON bool/float must never pass as int) ──
+
+    def test_json_false_is_none_not_a_known_false(self):
+        # json.loads("false") -> Python False, a bool instance. bool is an
+        # int subclass and False == 0, so a naive `value == 0` check would
+        # wrongly accept this as a safely-typed integer answer.
+        with mock.patch.object(general, "_hyprctl_getoption", return_value={"int": False}):
+            self.assertIsNone(general._get_effective_numlock())
+
+    def test_json_true_is_none_not_a_known_true(self):
+        with mock.patch.object(general, "_hyprctl_getoption", return_value={"int": True}):
+            self.assertIsNone(general._get_effective_numlock())
+
+    def test_json_float_zero_is_none(self):
+        # 0.0 == 0 is True in Python, so this must be rejected on type
+        # alone before any equality comparison happens.
+        with mock.patch.object(general, "_hyprctl_getoption", return_value={"int": 0.0}):
+            self.assertIsNone(general._get_effective_numlock())
+
+    def test_json_float_one_is_none(self):
+        with mock.patch.object(general, "_hyprctl_getoption", return_value={"int": 1.0}):
+            self.assertIsNone(general._get_effective_numlock())
+
+    def test_json_string_is_none(self):
+        with mock.patch.object(general, "_hyprctl_getoption", return_value={"int": "1"}):
+            self.assertIsNone(general._get_effective_numlock())
+
+    def test_json_null_is_none(self):
+        with mock.patch.object(general, "_hyprctl_getoption", return_value={"int": None}):
+            self.assertIsNone(general._get_effective_numlock())
+
+    def test_real_json_roundtrip_rejects_bool_and_float_accepts_int(self):
+        # Exercises the actual json module, not hand-built dicts, so a
+        # regression in the type check can't hide behind Python's own
+        # True/False singletons being reused for hand-constructed dicts.
+        for payload, expected in (
+            ('{"int": false}', None),
+            ('{"int": true}', None),
+            ('{"int": 0.0}', None),
+            ('{"int": 1.0}', None),
+            ('{"int": 0}', False),
+            ('{"int": 1}', True),
+        ):
+            with self.subTest(payload=payload):
+                fake = mock.MagicMock(returncode=0, stdout=payload)
+                with (
+                    mock.patch.object(general.shutil, "which", return_value="/usr/bin/hyprctl"),
+                    mock.patch.object(general.subprocess, "run", return_value=fake),
+                ):
+                    self.assertEqual(general._get_effective_numlock(), expected)
+
 
 # ── _merge_static_input_calls (own-managed-block parsing only) ─────────────
 
@@ -663,6 +714,63 @@ class WriteInputLuaFieldTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             general._write_input_lua_field("kb_layout", "de")
 
+    # ── M5.2: verifier exceptions that AREN'T RuntimeError (section 2) ──
+    #
+    # A verifier is caller-supplied and may fail with any normal
+    # exception type, not just RuntimeError — update_managed_lua_block_
+    # and_reload() must route all of them through the same rollback path.
+
+    def test_verifier_value_error_still_rolls_back_and_reloads_twice(self):
+        # _rollback_and_reload() always re-raises as RuntimeError (its
+        # existing, unchanged contract) with the original exception
+        # chained via __cause__ — the important, new-in-M5.2 behavior
+        # being verified here is that a ValueError from the verifier
+        # reaches this rollback path at all, not just RuntimeError.
+        general._write_input_lua_field("kb_layout", "us")  # establish a baseline
+        self.reload_mock.reset_mock()
+        self.layout_effective_mock.side_effect = ValueError("verifier blew up")
+        with self.assertRaises(RuntimeError) as ctx:
+            general._write_input_lua_field("kb_layout", "de")
+        self.assertIsInstance(ctx.exception.__cause__, ValueError)
+        self.assertIn("verifier blew up", str(ctx.exception))
+        self.assertEqual(self.reload_mock.call_count, 2)
+        self.assertEqual(general._read_own_managed_input_fields().get("kb_layout"), "us")
+
+    def test_verifier_type_error_still_rolls_back(self):
+        general._write_input_lua_field("kb_layout", "us")
+        self.layout_effective_mock.side_effect = TypeError("unexpected shape")
+        with self.assertRaises(RuntimeError) as ctx:
+            general._write_input_lua_field("kb_layout", "de")
+        self.assertIsInstance(ctx.exception.__cause__, TypeError)
+        self.assertEqual(general._read_own_managed_input_fields().get("kb_layout"), "us")
+
+    def test_verifier_non_runtime_error_preserves_foreign_change_protection(self):
+        # Rollback must still refuse to clobber a foreign writer's change
+        # that landed after our own write, regardless of which exception
+        # type triggered the rollback attempt.
+        general._write_input_lua_field("kb_layout", "us")
+        written_bytes = self.lua_path.read_bytes()
+
+        def foreign_write_then_raise():
+            self.lua_path.write_bytes(written_bytes + b"\n-- foreign change\n")
+            raise ValueError("verifier blew up")
+
+        self.layout_effective_mock.side_effect = foreign_write_then_raise
+        with self.assertRaises(hp.ManagedBlockError):
+            general._write_input_lua_field("kb_layout", "de")
+        self.assertIn(b"-- foreign change", self.lua_path.read_bytes())
+
+    def test_verifier_base_exception_is_not_caught_or_rolled_back(self):
+        # KeyboardInterrupt/SystemExit must propagate immediately, with no
+        # rollback attempt and no extra reload.
+        general._write_input_lua_field("kb_layout", "us")
+        self.reload_mock.reset_mock()
+        self.layout_effective_mock.side_effect = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            general._write_input_lua_field("kb_layout", "de")
+        self.assertEqual(self.reload_mock.call_count, 1)  # no rollback reload attempted
+        self.assertEqual(general._read_own_managed_input_fields().get("kb_layout"), "de")
+
     # ── Lock-scoped partial merge / TOCTOU race (section 3) ─────────────
 
     def test_transform_reads_fresh_state_under_lock_not_a_stale_pre_lock_read(self):
@@ -989,6 +1097,131 @@ class LoadAllRegressionAndSafetyTest(unittest.TestCase):
         self.assertFalse(loaded)
         self.assertFalse(page.is_loading)
         page.main_window.add_toast.assert_called_once()
+
+
+# ── M5.2: visibly neutral NumLock state (section 3) ─────────────────────────
+
+class NumlockNeutralStateTest(unittest.TestCase):
+    def _make_page(self):
+        page = types.SimpleNamespace(
+            layout_combo=mock.MagicMock(),
+            numlock_row=mock.MagicMock(),
+            lang_combo=mock.MagicMock(),
+            time_combo=mock.MagicMock(),
+            is_loading=False,
+        )
+        page._apply_layout_and_numlock = types.MethodType(general.GeneralPage._apply_layout_and_numlock, page)
+        return page
+
+    def test_unknown_numlock_disables_switch_and_shows_unknown_subtitle(self):
+        page = self._make_page()
+        page._apply_layout_and_numlock({})
+        page.numlock_row.set_active.assert_called_once_with(False)
+        page.numlock_row.set_sensitive.assert_called_once_with(False)
+        page.numlock_row.set_subtitle.assert_called_once_with(general.t("Current state unknown"))
+
+    def test_unknown_numlock_is_not_shown_as_known_false(self):
+        # Both "genuinely off" and "unknown" call set_active(False) (GTK
+        # has no tri-state switch), so the actual distinguishing signal is
+        # sensitivity + subtitle, not the switch's boolean state alone.
+        page = self._make_page()
+        page._apply_layout_and_numlock({})
+        unknown_sensitive_call = page.numlock_row.set_sensitive.call_args
+        page.numlock_row.reset_mock()
+        page._apply_layout_and_numlock({"numlock_by_default": "false"})
+        known_false_sensitive_call = page.numlock_row.set_sensitive.call_args
+        self.assertNotEqual(unknown_sensitive_call, known_false_sensitive_call)
+
+    def test_known_false_enables_switch_and_restores_normal_subtitle(self):
+        page = self._make_page()
+        page._apply_layout_and_numlock({"numlock_by_default": "false"})
+        page.numlock_row.set_active.assert_called_once_with(False)
+        page.numlock_row.set_sensitive.assert_called_once_with(True)
+        page.numlock_row.set_subtitle.assert_called_once_with(general.t("Live change in Hyprland"))
+
+    def test_known_true_enables_switch_and_restores_normal_subtitle(self):
+        page = self._make_page()
+        page._apply_layout_and_numlock({"numlock_by_default": "true"})
+        page.numlock_row.set_active.assert_called_once_with(True)
+        page.numlock_row.set_sensitive.assert_called_once_with(True)
+        page.numlock_row.set_subtitle.assert_called_once_with(general.t("Live change in Hyprland"))
+
+    def test_transition_from_unknown_to_known_false_restores_interactivity(self):
+        page = self._make_page()
+        page._apply_layout_and_numlock({})
+        page.numlock_row.reset_mock()
+        page._apply_layout_and_numlock({"numlock_by_default": "false"})
+        page.numlock_row.set_sensitive.assert_called_once_with(True)
+        page.numlock_row.set_subtitle.assert_called_once_with(general.t("Live change in Hyprland"))
+
+    def test_transition_from_unknown_to_known_true_restores_interactivity(self):
+        page = self._make_page()
+        page._apply_layout_and_numlock({})
+        page.numlock_row.reset_mock()
+        page._apply_layout_and_numlock({"numlock_by_default": "true"})
+        page.numlock_row.set_active.assert_called_once_with(True)
+        page.numlock_row.set_sensitive.assert_called_once_with(True)
+
+    def test_transition_from_known_to_unknown_disables_again(self):
+        page = self._make_page()
+        page._apply_layout_and_numlock({"numlock_by_default": "true"})
+        page.numlock_row.reset_mock()
+        page._apply_layout_and_numlock({})
+        page.numlock_row.set_sensitive.assert_called_once_with(False)
+        page.numlock_row.set_subtitle.assert_called_once_with(general.t("Current state unknown"))
+
+    def test_unknown_state_applied_under_is_loading_suppression(self):
+        page = self._make_page()
+        observed = []
+        page.numlock_row.set_active.side_effect = lambda v: observed.append(page.is_loading)
+        with mock.patch.object(general, "read_input_conf", return_value={}):
+            general.GeneralPage._revert_input_display(page)
+        self.assertTrue(observed and all(observed))
+        self.assertFalse(page.is_loading)
+
+    def test_revert_after_failed_write_shows_unknown_when_undeterminable(self):
+        page = types.SimpleNamespace()
+        page.main_window = mock.MagicMock()
+        page.is_loading = False
+        page.layout_combo = mock.MagicMock()
+        page.numlock_row = mock.MagicMock()
+        page.show_toast = types.MethodType(general.GeneralPage.show_toast, page)
+        page._apply_layout_and_numlock = types.MethodType(general.GeneralPage._apply_layout_and_numlock, page)
+        page._revert_input_display = types.MethodType(general.GeneralPage._revert_input_display, page)
+        row = mock.MagicMock()
+        row.get_active.return_value = True
+        with (
+            mock.patch.object(general, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(general, "_write_input_lua_field", side_effect=RuntimeError("not effective")),
+            mock.patch.object(general, "read_input_conf", return_value={}),
+        ):
+            general.GeneralPage._on_numlock_changed(page, row, None)
+        page.numlock_row.set_sensitive.assert_called_with(False)
+        page.numlock_row.set_subtitle.assert_called_with(general.t("Current state unknown"))
+        page.main_window.add_toast.assert_called_once()
+        toast = page.main_window.add_toast.call_args[0][0]
+        self.assertIn("not effective", toast.get_title())
+        self.assertFalse(page.is_loading)
+
+    def test_load_all_with_unreachable_hyprctl_shows_unknown_not_false(self):
+        page = types.SimpleNamespace(
+            layout_combo=mock.MagicMock(),
+            numlock_row=mock.MagicMock(),
+            lang_combo=mock.MagicMock(),
+            time_combo=mock.MagicMock(),
+            is_loading=False,
+        )
+        page.main_window = mock.MagicMock()
+        page.show_toast = types.MethodType(general.GeneralPage.show_toast, page)
+        page._apply_layout_and_numlock = types.MethodType(general.GeneralPage._apply_layout_and_numlock, page)
+        page._set_neutral_state = types.MethodType(general.GeneralPage._set_neutral_state, page)
+        with (
+            mock.patch.object(general, "read_input_conf", return_value={}),
+            mock.patch.object(general.subprocess, "run", side_effect=Exception("no localectl")),
+        ):
+            general.GeneralPage._load_all(page, hp.Provider.LUA)
+        page.numlock_row.set_sensitive.assert_called_with(False)
+        page.numlock_row.set_subtitle.assert_called_with(general.t("Current state unknown"))
 
 
 if __name__ == "__main__":

@@ -234,11 +234,18 @@ def _get_effective_numlock() -> bool | None:
     """Hyprland's own live-resolved input:numlock_by_default, or None if
     it can't be determined safely — never a guessed default like False.
     Hyprland reports bool config values as 0/1 under "int" in getoption's
-    JSON, not as a JSON boolean."""
+    JSON, not as a JSON boolean. `type(value) is int` (not `isinstance`,
+    and checked BEFORE any equality comparison) is required here: Python
+    bools are an int subclass and `True == 1`/`False == 0`, and JSON
+    floats round-trip equal too (`1.0 == 1`), so a naive `value == 0`/
+    `value == 1` check would silently accept a JSON `true`/`false` or
+    `1.0`/`0.0` as if it were a real, safely-typed integer answer."""
     data = _hyprctl_getoption("input:numlock_by_default")
     if data is None:
         return None
     value = data.get("int")
+    if type(value) is not int:
+        return None
     if value == 0:
         return False
     if value == 1:
@@ -493,7 +500,13 @@ class GeneralPage(Gtk.Box):
         (not "us" / not-set) and shows as no selection / off rather than a
         guessed default — see the module-level Lua-provider notes above
         for why the value can be unknown even when the file itself
-        exists."""
+        exists.
+
+        NumLock specifically has no true tri-state GTK widget, so "off"
+        alone would be visually indistinguishable from a safely known
+        `false` — an unknown value instead disables the switch and shows a
+        localized "unknown" hint via the subtitle, restoring the normal
+        subtitle and interactivity once a real value is known again."""
         layout = conf.get("kb_layout")
         if layout:
             layout = layout.lower()
@@ -505,7 +518,14 @@ class GeneralPage(Gtk.Box):
             self.layout_combo.set_active(-1)
 
         numlock_val = conf.get("numlock_by_default")
-        self.numlock_row.set_active(numlock_val == "true")
+        if numlock_val is None:
+            self.numlock_row.set_active(False)
+            self.numlock_row.set_sensitive(False)
+            self.numlock_row.set_subtitle(t("Current state unknown"))
+        else:
+            self.numlock_row.set_sensitive(True)
+            self.numlock_row.set_subtitle(t("Live change in Hyprland"))
+            self.numlock_row.set_active(numlock_val == "true")
 
     def _revert_input_display(self) -> None:
         """Restores the layout combo / numlock switch to the current
