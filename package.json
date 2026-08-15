@@ -1,0 +1,11 @@
+{
+  "name": "caelestia-settings",
+  "private": true,
+  "scripts": {
+    "format": "prettier --write README.md manifest.json .prettierrc.json package.json package-lock.json \".github/**/*.{yml,yaml}\"",
+    "format:check": "prettier --check README.md manifest.json .prettierrc.json package.json package-lock.json \".github/**/*.{yml,yaml}\""
+  },
+  "devDependencies": {
+    "prettier": "3.9.6"
+  }
+}

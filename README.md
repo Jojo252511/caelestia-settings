@@ -12,10 +12,12 @@
 ## Features
 
 ### Home
+
 - System at a Glance overview: current wallpaper (thumbnail preview), monitors summary, active Wi-Fi connection, keyboard layout, CPU/GPU temperatures with fan speeds
 - Quick Actions for one-click navigation to Wallpaper, Monitor, WLAN, Keybinds, and Updates pages
 
 ### Wallpaper
+
 - Image and video tabs — browse `~/Pictures/Wallpapers/` and `~/Videos/Wallpaper/`
 - Thumbnails generated via ffmpeg for videos, cached for fast reloads
 - Wallpaper folder dynamically read from `~/.config/caelestia/shell.json`
@@ -24,6 +26,7 @@
 - Desktop clock settings — toggle, position, scale and invert colors (written to `shell.json`)
 
 ### Monitor
+
 - Interactive drag-and-drop canvas — arrange monitors visually like Windows/GNOME
 - Per-monitor settings: resolution, refresh rate, rotation, bit depth (8/10-bit HDR), scale
 - Set primary monitor (`xrandr --primary` via `execs.conf`)
@@ -31,12 +34,14 @@
 - Rust-based parsing for both Hyprlang and Lua monitor configuration
 
 ### Workspaces
+
 - Visual editor grouped by monitor (physical order from `hyprctl monitors`)
 - Add, remove and reorder workspaces
 - Set monitor assignment, default workspace (★) and persistent flag per workspace
 - Provider-aware live apply: legacy keywords for Hyprlang, safe file write plus reload for Lua
 
 ### Keybinds
+
 - Full keybind editor — parser migrated from [HyprKeys](https://github.com/Jojo252511/hyprkeys)
 - `$variable` resolution (reads `variables.conf`)
 - Search and filter by bind type (`bind`, `binde`, `bindl` etc.)
@@ -45,6 +50,7 @@
 - Rust-based parser for `keybinds.conf` and `variables.conf`
 
 ### Window Rules
+
 - App scanner — reads all `.desktop` files from system and user applications
 - Assign workspace per app (dynamically loaded from `monitors.conf`, including named special workspaces)
 - Set float behavior and match type (`class` or `initial_title`)
@@ -54,6 +60,7 @@
 - Rust-based parser for `rules.conf` for improved performance and reliability
 
 ### General
+
 - Keyboard layout selector — ~90 XKB layouts with live Hyprland apply
 - NumLock on startup toggle
 - Provider-aware input configuration through `input.conf` or `input.lua`
@@ -61,16 +68,19 @@
 - Timezone (via `timedatectl`, requires sudo)
 
 ### WLAN
+
 - Scan and connect to Wi-Fi networks via NetworkManager D-Bus API
 - Secure password handling — credentials are passed over D-Bus, never exposed in process arguments (fixes issue #44)
 - Password dialog for secured networks
 - Disconnect from active network
 
 ### Audio
+
 - Output device selector
 - Default volume control
 
 ### Updates
+
 - In-app system update with live progress output — no terminal popup
 - Sudo password dialog (via `SUDO_ASKPASS`)
 - Optional automatic reboot after update
@@ -78,12 +88,14 @@
 - App self-update from GitHub
 
 ### Fans
+
 - CPU and GPU temperature readout (via psutil / NVML), updated every 2 seconds
 - GPU fan control: manual slider, presets (25 / 50 / 75 / 100 %), auto curve (temp-based)
 - System fan PWM control via hwmon — writes directly or via sudo password dialog
 - Graceful fallback when psutil or pynvml are not installed
 
 ### About
+
 - App version from `manifest.json`
 - One-click app self-update
 
@@ -91,8 +103,8 @@
 
 ## Screenshots
 
-| Keybinds | Wallpaper | Monitor |
-|----------|-----------|---------|
+| Keybinds                                                                                                   | Wallpaper                                                                                                    | Monitor                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | ![Keybinds](https://raw.githubusercontent.com/Jojo252511/caelestia-settings/main/screenshots/keybinds.png) | ![Wallpaper](https://raw.githubusercontent.com/Jojo252511/caelestia-settings/main/screenshots/wallpaper.png) | ![Monitor](https://raw.githubusercontent.com/Jojo252511/caelestia-settings/main/screenshots/monitor.png) |
 
 ---
@@ -102,11 +114,13 @@
 ### Dependencies
 
 For the application (Python UI + Rust parsing/Lua core):
+
 ```bash
 sudo pacman -S --needed python-gobject libadwaita pamixer git python-psutil python-cairo rust networkmanager lua
 ```
 
 Optional Rust developer tooling (the Rust compiler itself is required above):
+
 ```bash
 rustup component add clippy rust-analyzer
 ```
@@ -120,6 +134,7 @@ cd caelestia-settings
 ```
 
 The installer will:
+
 - Copy the app to `~/.local/share/caelestia-settings/`
 - Build the `caelestia_core` Rust extension (via a throwaway venv + `maturin`) and install it alongside the app — this step compiles Rust code and can take a minute
 - Create a `caelestia-settings` command in `~/.local/bin/`
@@ -142,6 +157,7 @@ confirmation prompt.
 ### Run without installing
 
 `caelestia_core` is a hard dependency — build it into your environment first. Use `--system-site-packages` so the venv can also see the system `python-gobject` (PyGI) install; a plain venv won't have it and `python main.py` will fail with `ModuleNotFoundError: No module named 'gi'`. Activate the venv (rather than calling `.venv/bin/maturin` by path) so `maturin develop` reliably targets it instead of some other `.venv` it might auto-detect elsewhere:
+
 ```bash
 cd caelestia-settings/rust/caelestia-py
 python3 -m venv --system-site-packages .venv
@@ -150,6 +166,7 @@ pip install maturin && maturin develop
 ```
 
 Then, from the same activated environment:
+
 ```bash
 cd caelestia-settings
 python main.py
@@ -159,11 +176,12 @@ python main.py
 
 ## Keyboard Shortcut
 
-| Shortcut | Action |
-|----------|--------|
+| Shortcut    | Action                  |
+| ----------- | ----------------------- |
 | `Super + I` | Open Caelestia Settings |
 
 To remove this shortcut, delete the following line from `~/.config/hypr/hyprland.conf`:
+
 ```
 bind = SUPER, I, exec, caelestia-settings
 ```
@@ -225,6 +243,7 @@ The application uses a hybrid Python + Rust architecture:
 - **PyO3 Bridge** (`caelestia-py`): Exposes `caelestia-core` to Python via PyO3, allowing the Python code to call Rust functions as if they were native Python extensions
 
 This separation allows:
+
 - Fast, reliable parsing of complex config files in Rust
 - Full unit testing of parsing logic without Python dependencies
 - Complete migration of configuration parsers to Rust (mandatory backend)
@@ -237,16 +256,16 @@ Caelestia Settings is being migrated to support both the legacy Hyprlang provide
 
 The current migration status on `feat/hyprland-lua-migration` is:
 
-| Configuration area | Hyprlang | Lua |
-|---|---:|---:|
-| General / Input | Supported | M5 complete and independently approved |
-| Monitors | Supported | Supported |
-| Workspaces | Supported | Supported |
-| Window Rules | Supported | Supported |
-| Keybinds / Variables | Supported | Planned for M7 |
-| Wallpaper autostart | Supported | M6 approved; not started |
-| Execs / primary monitor | Supported | M6 approved; not started |
-| Installer / Doctor integration | Supported | Planned for M8 |
+| Configuration area             |  Hyprlang |                                    Lua |
+| ------------------------------ | --------: | -------------------------------------: |
+| General / Input                | Supported | M5 complete and independently approved |
+| Monitors                       | Supported |                              Supported |
+| Workspaces                     | Supported |                              Supported |
+| Window Rules                   | Supported |                              Supported |
+| Keybinds / Variables           | Supported |                         Planned for M7 |
+| Wallpaper autostart            | Supported |               M6 approved; not started |
+| Execs / primary monitor        | Supported |               M6 approved; not started |
+| Installer / Doctor integration | Supported |                         Planned for M8 |
 
 Without an explicit provider choice, all provider-dependent configuration areas fail closed. Wi-Fi, Audio, Updates, Fans, and About remain provider-independent. The migration is tracked in [issue #51](https://github.com/Jojo252511/caelestia-settings/issues/51); v2.0.0 is not complete until the remaining milestones and release hardening are finished.
 
@@ -260,21 +279,21 @@ App-owned Lua output is isolated in named `BEGIN`/`END` managed blocks. Writes p
 
 The selected provider determines which Hyprland file is read and written. Unsupported Lua areas stay locked instead of silently editing an inactive Hyprlang file.
 
-| Area | Hyprlang path | Lua path | Current Lua status |
-|------|---------------|----------|--------------------|
-| Input | `~/.config/hypr/hyprland/input.conf` | `~/.config/hypr/hyprland/input.lua` | M5 complete and independently approved |
-| Monitors + workspaces | `~/.config/hypr/hyprland/monitors.conf` | `~/.config/hypr/hyprland/monitors.lua` | Supported |
-| Window Rules | `~/.config/hypr/hyprland/rules.conf` | `~/.config/hypr/hyprland/rules.lua` | Supported |
-| Keybinds | `~/.config/hypr/hyprland/keybinds.conf` | `~/.config/hypr/hyprland/keybinds.lua` | Planned for M7 |
-| Variables | `~/.config/hypr/variables.conf` | `~/.config/hypr/variables.lua` | Planned for M7 |
-| Autostart / primary monitor | `~/.config/hypr/hyprland/execs.conf` | `~/.config/hypr/hyprland/execs.lua` | M6 approved; not started |
+| Area                        | Hyprlang path                           | Lua path                               | Current Lua status                     |
+| --------------------------- | --------------------------------------- | -------------------------------------- | -------------------------------------- |
+| Input                       | `~/.config/hypr/hyprland/input.conf`    | `~/.config/hypr/hyprland/input.lua`    | M5 complete and independently approved |
+| Monitors + workspaces       | `~/.config/hypr/hyprland/monitors.conf` | `~/.config/hypr/hyprland/monitors.lua` | Supported                              |
+| Window Rules                | `~/.config/hypr/hyprland/rules.conf`    | `~/.config/hypr/hyprland/rules.lua`    | Supported                              |
+| Keybinds                    | `~/.config/hypr/hyprland/keybinds.conf` | `~/.config/hypr/hyprland/keybinds.lua` | Planned for M7                         |
+| Variables                   | `~/.config/hypr/variables.conf`         | `~/.config/hypr/variables.lua`         | Planned for M7                         |
+| Autostart / primary monitor | `~/.config/hypr/hyprland/execs.conf`    | `~/.config/hypr/hyprland/execs.lua`    | M6 approved; not started               |
 
 Provider-independent Caelestia state is stored separately:
 
-| File | What changes |
-|------|-------------|
-| `~/.config/caelestia/shell.json` | Desktop clock settings, taskbar visibility |
-| `~/.config/caelestia-settings/window_rules.json` | Window Rules cache |
+| File                                             | What changes                               |
+| ------------------------------------------------ | ------------------------------------------ |
+| `~/.config/caelestia/shell.json`                 | Desktop clock settings, taskbar visibility |
+| `~/.config/caelestia-settings/window_rules.json` | Window Rules cache                         |
 
 ---
 
@@ -282,12 +301,13 @@ Provider-independent Caelestia state is stored separately:
 
 The app automatically detects your system language:
 
-| Language | Detection |
-|----------|-----------|
-| English | Default |
-| German | `LANG=de_*` |
+| Language | Detection   |
+| -------- | ----------- |
+| English  | Default     |
+| German   | `LANG=de_*` |
 
 To override, edit `src/lang.py`:
+
 ```python
 IS_GERMAN = True   # force German
 IS_GERMAN = False  # force English
@@ -302,6 +322,7 @@ Automated testing and linting via GitHub Actions workflow (`.github/workflows/ci
 - **Python**: `ruff check main.py src/ tests/`; the test job builds and imports the real PyO3 extension before running `unittest` and an application-construction smoke test
 - **Lua**: `lua5.4`/`luac` is installed for syntax-validation tests
 - **Rust**: `cargo fmt --check`, `cargo clippy --locked --workspace --all-targets`, and `cargo test --locked --workspace` for both crates
+- **Formatting**: Prettier for Markdown, JSON, and YAML via `npm run format:check` (`npm ci` to install, `npm run format` to auto-format)
 - **Security**: `gitleaks` for secret scanning
 
 Triggers on push and pull request to `main` and `dev` branches.

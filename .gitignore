@@ -7,3 +7,4 @@ CLAUDE.md
 .mcp.json
 .ruff_cache/
 target/
+/node_modules/
