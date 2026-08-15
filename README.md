@@ -239,18 +239,16 @@ The current migration status on `feat/hyprland-lua-migration` is:
 
 | Configuration area | Hyprlang | Lua |
 |---|---:|---:|
-| General / Input | Supported | M5 implemented; M5.1 required after QA |
+| General / Input | Supported | M5 complete and independently approved |
 | Monitors | Supported | Supported |
 | Workspaces | Supported | Supported |
 | Window Rules | Supported | Supported |
 | Keybinds / Variables | Supported | Planned for M7 |
-| Wallpaper autostart | Supported | Planned for M6 |
-| Execs / primary monitor | Supported | Planned for M6 |
+| Wallpaper autostart | Supported | M6 approved; not started |
+| Execs / primary monitor | Supported | M6 approved; not started |
 | Installer / Doctor integration | Supported | Planned for M8 |
 
 Without an explicit provider choice, all provider-dependent configuration areas fail closed. Wi-Fi, Audio, Updates, Fans, and About remain provider-independent. The migration is tracked in [issue #51](https://github.com/Jojo252511/caelestia-settings/issues/51); v2.0.0 is not complete until the remaining milestones and release hardening are finished.
-
-Codex3 did not release M6 after the M5 review. M5.1 must first correct effective-value handling for later overrides, move partial-update merging inside the write lock, enforce strict helper input validation, and restore the UI after failed writes. M6 remains blocked until that follow-up passes review.
 
 ### Safe managed blocks
 
@@ -264,12 +262,12 @@ The selected provider determines which Hyprland file is read and written. Unsupp
 
 | Area | Hyprlang path | Lua path | Current Lua status |
 |------|---------------|----------|--------------------|
-| Input | `~/.config/hypr/hyprland/input.conf` | `~/.config/hypr/hyprland/input.lua` | M5 implemented; M5.1 required |
+| Input | `~/.config/hypr/hyprland/input.conf` | `~/.config/hypr/hyprland/input.lua` | M5 complete and independently approved |
 | Monitors + workspaces | `~/.config/hypr/hyprland/monitors.conf` | `~/.config/hypr/hyprland/monitors.lua` | Supported |
 | Window Rules | `~/.config/hypr/hyprland/rules.conf` | `~/.config/hypr/hyprland/rules.lua` | Supported |
 | Keybinds | `~/.config/hypr/hyprland/keybinds.conf` | `~/.config/hypr/hyprland/keybinds.lua` | Planned for M7 |
 | Variables | `~/.config/hypr/variables.conf` | `~/.config/hypr/variables.lua` | Planned for M7 |
-| Autostart / primary monitor | `~/.config/hypr/hyprland/execs.conf` | `~/.config/hypr/hyprland/execs.lua` | Planned for M6 |
+| Autostart / primary monitor | `~/.config/hypr/hyprland/execs.conf` | `~/.config/hypr/hyprland/execs.lua` | M6 approved; not started |
 
 Provider-independent Caelestia state is stored separately:
 
@@ -335,9 +333,8 @@ Triggers on push and pull request to `main` and `dev` branches.
 - [x] M2: Rust Lua codec with PyO3 bindings
 - [x] M3: Lua monitor and workspace support
 - [x] M4: Lua window-rule support
-- [x] M5 implementation: Lua General/Input support
-- [ ] M5.1: close M5 QA blockers before continuing
-- [ ] M6: Lua wallpaper/autostart and primary-monitor execs (blocked by M5.1)
+- [x] M5: Lua General/Input support, independently approved
+- [ ] M6: Lua wallpaper/autostart and primary-monitor execs (approved; not started)
 - [ ] M7: Lua keybinds and variables
 - [ ] M8: provider-aware installer and doctor
 - [ ] v2.0.0 release hardening and final validation
