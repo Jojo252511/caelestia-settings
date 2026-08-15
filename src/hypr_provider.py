@@ -21,6 +21,11 @@ later needs no changes in any page.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Callable
@@ -113,6 +118,127 @@ def resolve_path(domain: str, provider: Provider) -> Path:
     """
     paths = LEGACY_PATHS if provider is Provider.HYPRLANG else LUA_PATHS
     return paths[domain]
+
+
+# ── Safe managed-block writing for app-controlled Lua files ─────────────
+#
+# Every Lua config domain this app touches (monitors, window rules, execs,
+# keybinds, ...) writes into a *named* managed block inside the shared
+# provider file, and every one of those writes needs the same safety
+# properties (see the migration's security requirements): a backup of the
+# previous file, a write to a temp file first, `luac -p` validation of the
+# *whole resulting file* when luac is available, and an atomic replace —
+# never a partially written or silently invalid file. This is implemented
+# once here and reused by every domain instead of duplicated per page.
+
+
+class LuaWriteError(Exception):
+    """Raised when a managed Lua block write is aborted before touching the
+    real file — e.g. the freshly rendered content fails `luac -p`. The
+    original file on disk is left completely untouched in that case."""
+
+
+def _managed_block_markers(block_name: str) -> tuple[str, str]:
+    return (
+        f"-- BEGIN Caelestia Settings managed block: {block_name}",
+        f"-- END Caelestia Settings managed block: {block_name}",
+    )
+
+
+def _find_managed_block(lines: list[str], block_name: str) -> tuple[int, int] | None:
+    """Returns (begin_index, end_index) of the named block's marker lines,
+    or None if the pair isn't present (missing, only one marker, or in the
+    wrong order) — callers then treat it as "no existing block"."""
+    begin, end = _managed_block_markers(block_name)
+    try:
+        b = next(i for i, line in enumerate(lines) if line.strip() == begin)
+        e = next(i for i, line in enumerate(lines) if line.strip() == end)
+    except StopIteration:
+        return None
+    if e <= b:
+        return None
+    return b, e
+
+
+def read_managed_lua_block(path: Path, block_name: str) -> list[str]:
+    """Returns the lines currently inside the named managed block in
+    `path`, or `[]` if the file or the block doesn't exist yet."""
+    if not path.exists():
+        return []
+    lines = path.read_text().splitlines()
+    markers = _find_managed_block(lines, block_name)
+    if markers is None:
+        return []
+    b, e = markers
+    return lines[b + 1 : e]
+
+
+def write_managed_lua_block(path: Path, block_name: str, managed_lines: list[str]) -> None:
+    """Replaces the named managed block in `path` with `managed_lines`,
+    creating the block (and the file) if it doesn't exist yet. Content
+    outside the named block — including other named blocks and any
+    manually written Lua — is preserved byte-for-byte.
+
+    Safety sequence: backup the existing file, render the full new
+    content, write it to a temp file in the same directory, validate with
+    `luac -p` if available, then atomically `os.replace()` it into place.
+    On any failure the temp file is removed and the original file is left
+    exactly as it was — this function either fully succeeds or changes
+    nothing.
+    """
+    begin, end = _managed_block_markers(block_name)
+    existing = path.read_text() if path.exists() else ""
+    lines = existing.splitlines()
+    markers = _find_managed_block(lines, block_name)
+
+    block = [begin, *managed_lines, end]
+    if markers is None:
+        prefix = lines + ([""] if lines and lines[-1].strip() else [])
+        new_lines = prefix + block
+    else:
+        b, e = markers
+        new_lines = lines[:b] + block + lines[e + 1 :]
+
+    new_content = "\n".join(new_lines) + "\n"
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        shutil.copy2(path, path.with_name(f"{path.name}.bak_{ts}"))
+
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(new_content)
+
+        luac = shutil.which("luac")
+        if luac:
+            result = subprocess.run([luac, "-p", str(tmp_path)], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                raise LuaWriteError(
+                    t("Generated Lua is invalid, changes were not applied:") + f"\n{result.stderr.strip()}"
+                )
+
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def reload_hyprland() -> None:
+    """Runs `hyprctl reload` — the provider-agnostic way to apply config
+    file changes live (unlike `hyprctl keyword ...`, which fails outright
+    under the Lua provider). Raises RuntimeError with hyprctl's own error
+    output on failure; callers must surface this to the user rather than
+    swallow it.
+    """
+    try:
+        result = subprocess.run(["hyprctl", "reload"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"hyprctl reload: {e}") from e
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"hyprctl reload exited with code {result.returncode}")
 
 
 # ── Transitional dialog ──────────────────────────────────────────────────

@@ -1,8 +1,20 @@
 import json
 import subprocess
 import cairo
+import caelestia_core
 from src.lang import t
 from gi.repository import Gtk, Adw, GLib
+from src.hypr_provider import (
+    Provider,
+    LuaWriteError,
+    load_provider,
+    read_managed_lua_block,
+    reload_hyprland,
+    resolve_path,
+    write_managed_lua_block,
+)
+
+MONITORS_LUA_BLOCK = "monitors"
 
 # ── Konstanten ────────────────────────────────────────────────────────────────
 
@@ -46,8 +58,10 @@ def _get_live_monitors() -> list[dict]:
         print(f"hyprctl fehler: {e}")
         return []
 
-    # Extras aus monitors.conf lesen (bitdepth)
-    extras = _parse_conf_extras()
+    # Extras (bitdepth) aus der providereigenen Datei lesen — hyprctl liefert
+    # den aktuellen Live-Zustand unabhängig vom Provider, aber bitdepth ist
+    # kein Feld in dessen JSON-Ausgabe.
+    extras = _parse_monitors_lua_extras() if load_provider() is Provider.LUA else _parse_conf_extras()
     for m in monitors:
         name = m.get("name", "")
         if name in extras:
@@ -84,6 +98,75 @@ def _parse_conf_extras() -> dict:
     except Exception as e:
         print(f"Fehler beim Lesen von monitors.conf extras: {e}")
     return result
+
+
+# ── Lua provider ──────────────────────────────────────────────────────────
+#
+# monitors.lua holds two independent app-managed blocks in the same file:
+# "monitors" (hl.monitor(...) calls, written here) and "workspaces"
+# (hl.workspace_rule(...) calls, written by workspaces.py). Each block is
+# only ever touched by its own owner via write_managed_lua_block(), so the
+# two pages never clobber each other's entries.
+#
+# TODO(hyprland-lua-migration): monitors.lua must actually be loaded by the
+# user's hyprland.lua (e.g. via a require/dofile line) for any of this to
+# take effect — wiring that up during install is M8's job, not this page's.
+
+
+def _parse_monitors_lua_extras() -> dict:
+    """Mirrors _parse_conf_extras() but reads bitdepth back out of the
+    app-managed hl.monitor(...) block in monitors.lua instead of .conf."""
+    path = resolve_path("monitors", Provider.LUA)
+    result = {}
+    for line in read_managed_lua_block(path, MONITORS_LUA_BLOCK):
+        line = line.strip()
+        if not line.startswith("hl.monitor("):
+            continue
+        try:
+            _, args = caelestia_core.parse_lua_call(line)
+        except ValueError:
+            continue
+        if not args or not isinstance(args[0], dict):
+            continue
+        table = args[0]
+        name = table.get("output", "")
+        if not name:
+            continue
+        bitdepth = table.get("bitdepth", "")
+        result[name] = {"bitdepth": str(bitdepth) if bitdepth else ""}
+    return result
+
+
+def _build_monitor_lua_table(m) -> dict:
+    """Builds the hl.monitor({...}) argument table for one monitor,
+    matching Hyprland's own example syntax (output/mode/position/scale,
+    optional bitdepth/transform; disabled monitors use mode = "disable",
+    mirroring the .conf provider's `,disable` field)."""
+    if m.disabled:
+        return {"output": m.name, "mode": "disable"}
+
+    table = {
+        "output": m.name,
+        "mode": f"{m.resolution}@{m.hz}" if m.hz else m.resolution,
+        "position": f"{int(m.x)}x{int(m.y)}",
+        "scale": round(float(m.scale), 4),
+    }
+    if m.bitdepth:
+        table["bitdepth"] = int(m.bitdepth)
+    if m.transform and m.transform != "0":
+        table["transform"] = int(m.transform)
+    return table
+
+
+def _save_monitors_lua(monitors: list) -> None:
+    """Renders every monitor as an hl.monitor({...}) call and safely
+    replaces the "monitors" managed block in monitors.lua. Raises
+    LuaWriteError (propagated from write_managed_lua_block) if the
+    generated file fails luac validation — the file on disk is then left
+    unchanged."""
+    path = resolve_path("monitors", Provider.LUA)
+    lines = [caelestia_core.render_lua_call("hl.monitor", [_build_monitor_lua_table(m)]) for m in monitors]
+    write_managed_lua_block(path, MONITORS_LUA_BLOCK, lines)
 
 
 def _apply_to_hyprland(monitors: list[dict]):
@@ -800,8 +883,21 @@ class MonitorPage(Gtk.Box):
                 m.primary = False
 
     def _on_apply(self, _btn):
-        _apply_to_hyprland(self._monitors)
-        _save_monitors_conf(self._monitors)
+        provider = load_provider() or Provider.HYPRLANG
+        try:
+            if provider is Provider.LUA:
+                # Write first, then reload — under Lua there is no per-field
+                # `hyprctl keyword` (it fails outright, see issue #51), so
+                # the only live-apply path is reloading the validated file.
+                _save_monitors_lua(self._monitors)
+                reload_hyprland()
+            else:
+                _apply_to_hyprland(self._monitors)
+                _save_monitors_conf(self._monitors)
+        except (LuaWriteError, RuntimeError) as e:
+            self.main_window.add_toast(Adw.Toast.new(str(e)))
+            return
+
         # Hauptmonitor speichern
         for m in self._monitors:
             if m.primary:

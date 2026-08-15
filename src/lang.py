@@ -141,6 +141,9 @@ TRANSLATIONS = {
         "zukünftigen Version entfernt."
     ),
     "Hyprland configuration provider saved.": "Hyprland-Konfigurationsformat gespeichert.",
+    "Generated Lua is invalid, changes were not applied:": (
+        "Generiertes Lua ist ungültig, Änderungen wurden nicht übernommen:"
+    ),
     "Delete keybind?": "Keybind löschen?",
     "Delete": "Löschen",
     "Keybind saved and Hyprland reloaded.": "Keybind gespeichert und Hyprland neu geladen.",
