@@ -1,3 +1,4 @@
+import fcntl
 import os
 import shutil
 import subprocess
@@ -182,6 +183,18 @@ class ManagedLuaBlockTest(unittest.TestCase):
             with self.assertRaises(hp.ManagedBlockError):
                 hp.write_managed_lua_block(self.path, "monitors", ["hl.monitor({})"])
         self.assertEqual(self.path.read_text(), "-- concurrent edit\n")
+
+    def test_lock_wait_has_bounded_timeout(self):
+        lock_path = self.path.with_name(f".{self.path.name}.caelestia.lock")
+        with open(lock_path, "a+b") as held_lock:
+            fcntl.flock(held_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with (
+                mock.patch.object(hp, "LOCK_TIMEOUT_SECONDS", 0.01),
+                mock.patch.object(hp, "LOCK_POLL_SECONDS", 0.001),
+                self.assertRaisesRegex(hp.LockTimeoutError, "Timed out waiting"),
+            ):
+                hp.write_managed_lua_block(self.path, "monitors", ["hl.monitor({})"])
+        self.assertFalse(self.path.exists())
 
     def test_reload_failure_rolls_back_and_reloads_rollback(self):
         self.path.write_text("-- original\n")

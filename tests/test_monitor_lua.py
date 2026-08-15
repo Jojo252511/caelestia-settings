@@ -14,7 +14,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from src import hypr_provider as hp
-from src.pages import monitor
+from src.pages import home, monitor
 
 
 def _mon(**overrides) -> SimpleNamespace:
@@ -107,6 +107,49 @@ class SaveAndParseMonitorsLuaTest(unittest.TestCase):
         self.assertEqual(monitor._parse_monitors_lua_extras(), {})
 
 
+class ProviderMissingMonitorTest(unittest.TestCase):
+    def test_live_monitor_read_is_blocked_without_provider(self):
+        with (
+            mock.patch("src.pages.monitor.load_provider", return_value=None),
+            mock.patch("src.pages.monitor.subprocess.run") as run_mock,
+            mock.patch("src.pages.monitor._parse_monitors_lua_extras") as lua_mock,
+            mock.patch("src.pages.monitor._parse_conf_extras") as conf_mock,
+        ):
+            self.assertEqual(monitor._get_live_monitors(), [])
+        run_mock.assert_not_called()
+        lua_mock.assert_not_called()
+        conf_mock.assert_not_called()
+
+    def test_page_is_locked_and_cleared_without_provider(self):
+        page = monitor.MonitorPage.__new__(monitor.MonitorPage)
+        page._provider_banner = mock.MagicMock()
+        page._apply_btn = mock.MagicMock()
+        page._canvas = mock.MagicMock()
+        page._settings_panel = mock.MagicMock()
+        page._monitors = [_mon()]
+        with (
+            mock.patch("src.pages.monitor.load_provider", return_value=None),
+            mock.patch("src.pages.monitor._get_live_monitors") as live_mock,
+        ):
+            monitor.MonitorPage.load_monitors(page)
+        live_mock.assert_not_called()
+        page._provider_banner.set_revealed.assert_called_once_with(True)
+        page._apply_btn.set_sensitive.assert_called_once_with(False)
+        self.assertEqual(page._monitors, [])
+
+    def test_home_does_not_read_legacy_monitors_without_provider(self):
+        page = home.HomePage.__new__(home.HomePage)
+        page._monitor_row = mock.MagicMock()
+        with (
+            mock.patch("src.pages.home.load_provider", return_value=None),
+            mock.patch("src.pages.home.parse_monitors_conf") as conf_mock,
+        ):
+            home.HomePage._refresh_monitors(page)
+        conf_mock.assert_not_called()
+        subtitle = page._monitor_row.set_subtitle.call_args[0][0]
+        self.assertEqual(subtitle, home.t("Hyprland configuration provider required"))
+
+
 class OnApplyLuaErrorHandlingTest(unittest.TestCase):
     """MonitorPage._on_apply must surface Lua write/reload failures as a
     toast instead of crashing or silently discarding them."""
@@ -133,6 +176,19 @@ class OnApplyLuaErrorHandlingTest(unittest.TestCase):
         page.main_window.add_toast.assert_called_once()
         toast_arg = page.main_window.add_toast.call_args[0][0]
         self.assertIn("boom", toast_arg.get_title())
+
+    def test_lock_timeout_is_shown_as_toast(self):
+        page = monitor.MonitorPage.__new__(monitor.MonitorPage)
+        page._monitors = [_mon()]
+        page.main_window = mock.MagicMock()
+        error = hp.LockTimeoutError("Timed out waiting for configuration write lock")
+        with (
+            mock.patch("src.pages.monitor.load_provider", return_value=hp.Provider.LUA),
+            mock.patch("src.pages.monitor._save_monitors_lua_and_reload", side_effect=error),
+        ):
+            monitor.MonitorPage._on_apply(page, mock.MagicMock())
+        toast = page.main_window.add_toast.call_args[0][0]
+        self.assertIn("Timed out waiting", toast.get_title())
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from pathlib import Path
 from gi.repository import Adw, GdkPixbuf, GLib, Gtk
 
 from src.config import parse_monitors_conf
+from src.hypr_provider import Provider, load_provider
 from src.lang import t
 from src.pages.fans import read_cpu_temp, read_gpu_stats
 from src.pages.general import KEYBOARD_LAYOUTS, read_input_conf
@@ -159,16 +160,33 @@ class HomePage(Gtk.Box):
         self._wallpaper_thumb.set_visible(pixbuf is not None)
 
     def _refresh_monitors(self):
-        monitors = parse_monitors_conf()["monitors"]
+        provider = load_provider()
+        if provider is None:
+            self._monitor_row.set_subtitle(t("Hyprland configuration provider required"))
+            return
+        if provider is Provider.LUA:
+            from src.pages.monitor import _get_live_monitors
+
+            monitors = _get_live_monitors()
+        else:
+            monitors = parse_monitors_conf()["monitors"]
         if not monitors:
             self._monitor_row.set_subtitle(t("No monitors configured"))
             return
 
-        summary = "  |  ".join(
-            f"{m['name']} · {m['resolution']}" if m["resolution"] else m["name"]
-            for m in monitors
-        )
+        summaries = []
+        for monitor in monitors:
+            resolution = monitor.get("resolution", "")
+            if not resolution and monitor.get("width") and monitor.get("height"):
+                resolution = f"{monitor['width']}x{monitor['height']}"
+            summaries.append(
+                f"{monitor['name']} · {resolution}" if resolution else monitor["name"]
+            )
+        summary = "  |  ".join(summaries)
         self._monitor_row.set_subtitle(GLib.markup_escape_text(summary))
+
+    def on_provider_changed(self):
+        self._refresh_monitors()
 
     def _refresh_wifi(self):
         if not has_wifi_adapter():

@@ -142,6 +142,22 @@ TRANSLATIONS = {
         "zukünftigen Version entfernt."
     ),
     "Hyprland configuration provider saved.": "Hyprland-Konfigurationsformat gespeichert.",
+    "Choose a Hyprland configuration provider to unlock this page.": (
+        "Wähle ein Hyprland-Konfigurationsformat, um diese Seite freizuschalten."
+    ),
+    "Hyprland configuration provider required": "Hyprland-Konfigurationsformat erforderlich",
+    "Choose Yes or No in the provider dialog before editing configuration.": (
+        "Wähle im Provider-Dialog Ja oder Nein, bevor du die Konfiguration bearbeitest."
+    ),
+    "Choose Yes or No in the provider dialog before reading configuration.": (
+        "Wähle im Provider-Dialog Ja oder Nein, bevor die Konfiguration gelesen wird."
+    ),
+    "Choose a Hyprland configuration provider first.": (
+        "Wähle zuerst ein Hyprland-Konfigurationsformat."
+    ),
+    "Lua compiler (luac) is required; changes were not applied.": (
+        "Der Lua-Compiler (luac) ist erforderlich; Änderungen wurden nicht übernommen."
+    ),
     "Generated Lua is invalid, changes were not applied:": (
         "Generiertes Lua ist ungültig, Änderungen wurden nicht übernommen:"
     ),

@@ -10,7 +10,7 @@ from src.hypr_provider import (
     load_provider,
     read_managed_lua_block,
     resolve_path,
-    write_managed_legacy_block,
+    write_managed_legacy_block_and_reload,
     write_managed_lua_block,
     write_managed_lua_block_and_reload,
 )
@@ -51,6 +51,9 @@ CANVAS_H = 220   # Höhe der Vorschau-Canvas in Pixeln
 def _get_live_monitors() -> list[dict]:
     """Liefert die aktuellen Monitor-Daten von hyprctl, angereichert mit
     Extras aus monitors.conf (bitdepth)."""
+    provider = load_provider()
+    if provider is None:
+        return []
     try:
         res = subprocess.run(
             ["hyprctl", "monitors", "all", "-j"],
@@ -64,7 +67,7 @@ def _get_live_monitors() -> list[dict]:
     # Extras (bitdepth) aus der providereigenen Datei lesen — hyprctl liefert
     # den aktuellen Live-Zustand unabhängig vom Provider, aber bitdepth ist
     # kein Feld in dessen JSON-Ausgabe.
-    extras = _parse_monitors_lua_extras() if load_provider() is Provider.LUA else _parse_conf_extras()
+    extras = _parse_monitors_lua_extras() if provider is Provider.LUA else _parse_conf_extras()
     for m in monitors:
         name = m.get("name", "")
         if name in extras:
@@ -195,7 +198,7 @@ def _save_monitors_conf(monitors: list):
     """Replace only the app-owned monitor block in monitors.conf."""
     from src.config import HYPR_MONITORS_CONF
     lines = [f"monitor = {_build_monitor_keyword(m)}" for m in monitors]
-    write_managed_legacy_block(
+    write_managed_legacy_block_and_reload(
         HYPR_MONITORS_CONF,
         MONITORS_CONF_BLOCK,
         lines,
@@ -811,6 +814,10 @@ class MonitorPage(Gtk.Box):
         self.set_spacing(0)
         self._monitors: list[MonitorModel] = []
 
+        self._provider_banner = Adw.Banner()
+        self._provider_banner.set_title(t("Choose a Hyprland configuration provider to unlock this page."))
+        self.append(self._provider_banner)
+
         # ── Canvas ──
         canvas_frame = Gtk.Frame()
         canvas_frame.set_margin_top(12)
@@ -842,20 +849,33 @@ class MonitorPage(Gtk.Box):
         btn_box.set_margin_bottom(12)
         btn_box.set_margin_end(12)
 
-        reload_btn = Gtk.Button(label=t("Reload"))
-        reload_btn.connect("clicked", lambda _: self.load_monitors())
-        btn_box.append(reload_btn)
+        self._reload_btn = Gtk.Button(label=t("Reload"))
+        self._reload_btn.connect("clicked", lambda _: self.load_monitors())
+        btn_box.append(self._reload_btn)
 
-        apply_btn = Gtk.Button(label=t("Apply"))
-        apply_btn.add_css_class("suggested-action")
-        apply_btn.connect("clicked", self._on_apply)
-        btn_box.append(apply_btn)
+        self._apply_btn = Gtk.Button(label=t("Apply"))
+        self._apply_btn.add_css_class("suggested-action")
+        self._apply_btn.connect("clicked", self._on_apply)
+        btn_box.append(self._apply_btn)
 
         self.append(btn_box)
 
         self.load_monitors()
 
     def load_monitors(self):
+        provider_missing = load_provider() is None
+        self._provider_banner.set_revealed(provider_missing)
+        self._apply_btn.set_sensitive(not provider_missing)
+        self._canvas.set_sensitive(not provider_missing)
+        self._settings_panel.set_sensitive(not provider_missing)
+        if provider_missing:
+            self._monitors = []
+            self._canvas.monitors = []
+            self._canvas.selected = None
+            self._canvas.queue_draw()
+            self._settings_panel.load(None)
+            return
+
         raw = _get_live_monitors()
         self._monitors = [MonitorModel(m) for m in raw]
 
@@ -892,7 +912,6 @@ class MonitorPage(Gtk.Box):
                 # the only live-apply path is reloading the validated file.
                 _save_monitors_lua_and_reload(self._monitors)
             else:
-                _apply_to_hyprland(self._monitors)
                 _save_monitors_conf(self._monitors)
         except (LuaWriteError, RuntimeError) as e:
             self.main_window.add_toast(Adw.Toast.new(str(e)))
@@ -908,6 +927,9 @@ class MonitorPage(Gtk.Box):
         self.main_window.add_toast(
             Adw.Toast.new(t("Monitor configuration saved and applied."))
         )
+
+    def on_provider_changed(self):
+        self.load_monitors()
 
     # Kompatibilität mit window.py (apply_btn dort entfernen wir später)
     def get_all_widget_settings(self):

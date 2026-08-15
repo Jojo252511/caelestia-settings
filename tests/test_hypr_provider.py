@@ -111,6 +111,10 @@ class ResolvePathTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             hp.resolve_path("does-not-exist", hp.Provider.HYPRLANG)
 
+    def test_missing_provider_never_defaults_to_lua(self):
+        with self.assertRaisesRegex(ValueError, "provider is required"):
+            hp.resolve_path("monitors", None)
+
 
 class ProviderDialogTest(unittest.TestCase):
     class FakeDialog:

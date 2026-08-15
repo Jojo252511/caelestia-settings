@@ -75,18 +75,21 @@ class MainWindow(Adw.ApplicationWindow):
 
         # Seiten instantiieren
         self.mon_page = MonitorPage(self)
+        self.workspaces_page = WorkspacesPage(self)
+        self.window_rules_page = WindowRulesPage(self)
         self.about_page = AboutPage(self)
+        self.home_page = HomePage(self)
 
         # ── Stack befüllen ──────────────────────────────────────────────────
         # HomePage reads about_page.local_version, so it is built after it.
-        self.stack.add_titled(HomePage(self),          "home",    t("Home"))
+        self.stack.add_titled(self.home_page,          "home",    t("Home"))
         self.stack.add_titled(GeneralPage(self),      "gen",     t("General"))
         self.stack.add_titled(WallpaperPage(self),     "wall",    "Wallpaper")
-        self.stack.add_titled(WorkspacesPage(self),   "ws",      "Workspaces")
+        self.stack.add_titled(self.workspaces_page,   "ws",      "Workspaces")
         self.stack.add_titled(self.mon_page,           "mon",     t("Monitor"))
         self.stack.add_titled(WifiPage(self),          "wifi",    "WLAN")
         self.stack.add_titled(AudioPage(self),         "audio",   t("Audio"))
-        self.stack.add_titled(WindowRulesPage(self),   "rules",   "Window Rules")
+        self.stack.add_titled(self.window_rules_page,  "rules",   "Window Rules")
         self.stack.add_titled(KeybindsPage(self),      "keys",    "Keybinds")
         self.stack.add_titled(FansPage(self),          "fans",    t("Fans"))
         self.stack.add_titled(UpdatePage(self),        "upd",     t("Updates"))
@@ -101,6 +104,10 @@ class MainWindow(Adw.ApplicationWindow):
             prompt_provider_choice(self, self._on_provider_chosen)
 
     def _on_provider_chosen(self, provider):
+        self.mon_page.on_provider_changed()
+        self.workspaces_page.on_provider_changed()
+        self.window_rules_page.on_provider_changed()
+        self.home_page.on_provider_changed()
         self.add_toast(Adw.Toast.new(t("Hyprland configuration provider saved.")))
 
     def add_toast(self, toast):

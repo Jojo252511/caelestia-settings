@@ -277,6 +277,27 @@ class SaveAndLoadWindowRulesLuaTest(unittest.TestCase):
 
 
 class LoadExistingRulesDispatchTest(unittest.TestCase):
+    def test_returns_empty_without_provider_and_reads_no_config(self):
+        with (
+            mock.patch("src.pages.window_rules.load_provider", return_value=None),
+            mock.patch("src.pages.window_rules._load_window_rules_lua") as lua_mock,
+            mock.patch("src.pages.window_rules.parse_rules_conf") as conf_mock,
+        ):
+            self.assertEqual(wr._load_existing_rules(), [])
+        lua_mock.assert_not_called()
+        conf_mock.assert_not_called()
+
+    def test_page_state_is_empty_without_provider(self):
+        with (
+            mock.patch("src.pages.window_rules._load_workspaces_shared") as workspace_mock,
+            mock.patch("src.pages.window_rules.load_window_rules_config") as cache_mock,
+            mock.patch("src.pages.window_rules._load_existing_rules") as rules_mock,
+        ):
+            self.assertEqual(wr._load_provider_page_state(None), ([], {}, []))
+        workspace_mock.assert_not_called()
+        cache_mock.assert_not_called()
+        rules_mock.assert_not_called()
+
     def test_routes_to_lua(self):
         with (
             mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.LUA),
@@ -323,13 +344,11 @@ class OnSaveClickedLuaTest(unittest.TestCase):
                 "src.pages.window_rules._save_window_rules_lua_and_reload",
                 side_effect=hp.LuaWriteError("bad lua"),
             ),
-            mock.patch("src.pages.window_rules.reload_hyprland") as reload_mock,
             mock.patch("src.pages.window_rules.save_window_rules_config") as cache_mock,
         ):
             wr.WindowRulesPage._on_save_clicked(page, btn)
 
         cache_mock.assert_not_called()
-        reload_mock.assert_not_called()
         page.main_window.add_toast.assert_called_once()
         toast = page.main_window.add_toast.call_args[0][0]
         self.assertIn("bad lua", toast.get_title())
@@ -380,8 +399,7 @@ class OnSaveClickedLuaTest(unittest.TestCase):
         page, btn = self._make_page({"a": self._row("kitty", _rule(workspace="2"))})
         with (
             mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.HYPRLANG),
-            mock.patch("src.pages.window_rules._write_rules_conf"),
-            mock.patch("src.pages.window_rules.reload_hyprland", side_effect=RuntimeError("legacy fail")),
+            mock.patch("src.pages.window_rules._write_rules_conf", side_effect=RuntimeError("legacy fail")),
             mock.patch("src.pages.window_rules.save_window_rules_config") as cache_mock,
         ):
             wr.WindowRulesPage._on_save_clicked(page, btn)
@@ -456,6 +474,19 @@ class ExistingTabProviderPathTest(unittest.TestCase):
         self.assertIn(str(hp.LUA_PATHS["rules"]), markup)
         self.assertIn("hl.window_rule", markup)
 
+    def test_missing_provider_does_not_resolve_or_read_a_config(self):
+        page = self._make_page()
+        with (
+            mock.patch("src.pages.window_rules.load_provider", return_value=None),
+            mock.patch("src.pages.window_rules.resolve_path") as resolve_mock,
+            mock.patch("src.pages.window_rules.Adw.PreferencesGroup", return_value=mock.MagicMock()),
+            mock.patch("src.pages.window_rules.Adw.ActionRow", return_value=mock.MagicMock()),
+        ):
+            wr.WindowRulesPage._refresh_existing_tab(page)
+        resolve_mock.assert_not_called()
+        markup = page._existing_desc_label.set_markup.call_args[0][0]
+        self.assertIn("provider dialog", markup)
+
     def test_uses_conf_path_under_hyprlang_provider(self):
         page = self._make_page()
         with (
@@ -518,7 +549,10 @@ class LegacyConfRegressionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "rules.conf"
             path.write_text("# manual rule\nwindowrule = float, class:^(manual)$\n")
-            with mock.patch("src.pages.window_rules.HYPR_RULES_CONF", path):
+            with (
+                mock.patch("src.pages.window_rules.HYPR_RULES_CONF", path),
+                mock.patch("src.hypr_provider.reload_hyprland"),
+            ):
                 wr._write_rules_conf(wr._generate_rules_lines({"kitty": _rule(workspace="2")}))
             content = path.read_text()
             self.assertIn("# manual rule", content)

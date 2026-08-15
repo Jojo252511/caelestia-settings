@@ -8,7 +8,7 @@ from src.hypr_provider import (
     load_provider,
     read_managed_lua_block,
     resolve_path,
-    write_managed_legacy_block,
+    write_managed_legacy_block_and_reload,
     write_managed_lua_block,
     write_managed_lua_block_and_reload,
 )
@@ -26,7 +26,10 @@ def _load_workspaces() -> list[dict]:
     (workspace-Zeilen) oder monitors.lua (hl.workspace_rule(...)-Block):
     [ {"number": 1, "monitor": "DP-1", "default": True, "persistent": False} ]
     """
-    if load_provider() is Provider.LUA:
+    provider = load_provider()
+    if provider is None:
+        return []
+    if provider is Provider.LUA:
         return _load_workspaces_lua()
     return _load_workspaces_conf()
 
@@ -136,6 +139,9 @@ def _load_workspaces_conf() -> list[dict]:
 
 
 def _get_monitor_names() -> list[str]:
+    provider = load_provider()
+    if provider is None:
+        return []
     try:
         import json
         res = subprocess.run(
@@ -144,7 +150,7 @@ def _get_monitor_names() -> list[str]:
         )
         return [m["name"] for m in json.loads(res.stdout)]
     except Exception:
-        if load_provider() is Provider.LUA:
+        if provider is Provider.LUA:
             return _get_monitor_names_lua_fallback()
         data = parse_monitors_conf()
         return [m["name"] for m in data.get("monitors", [])]
@@ -202,25 +208,13 @@ def _save_workspaces_conf(workspaces: list[dict]):
     if not HYPR_MONITORS_CONF.exists():
         return
     lines = [_build_workspace_line(ws) for ws in sorted(workspaces, key=lambda w: w["number"])]
-    write_managed_legacy_block(
+    write_managed_legacy_block_and_reload(
         HYPR_MONITORS_CONF,
         WORKSPACES_CONF_BLOCK,
         lines,
         legacy_marker=MANAGED_MARKER,
         legacy_line_predicate=lambda line: not line.strip() or line.strip().startswith("workspace ="),
     )
-
-    # Live anwenden
-    for ws in workspaces:
-        keyword = _build_workspace_line(ws).split("=", 1)[1].strip()
-        try:
-            subprocess.run(
-                ["hyprctl", "keyword", "workspace", keyword],
-                capture_output=True, timeout=3
-            )
-        except Exception as e:
-            print(f"hyprctl workspace fehler: {e}")
-
 
 # ── Haupt-Seite ───────────────────────────────────────────────────────────────
 
@@ -235,6 +229,10 @@ class WorkspacesPage(Gtk.Box):
         self._monitor_names: list[str] = []
         self._rows: list["WorkspaceRow"] = []
 
+        self._provider_banner = Adw.Banner()
+        self._provider_banner.set_title(t("Choose a Hyprland configuration provider to unlock this page."))
+        self.append(self._provider_banner)
+
         # ── Toolbar ──────────────────────────────────────────────────────
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         bar.set_margin_top(12)
@@ -248,14 +246,14 @@ class WorkspacesPage(Gtk.Box):
         title.set_halign(Gtk.Align.START)
         bar.append(title)
 
-        add_btn = Gtk.Button(label=t("+ Add"))
-        add_btn.connect("clicked", self._on_add)
-        bar.append(add_btn)
+        self._add_btn = Gtk.Button(label=t("+ Add"))
+        self._add_btn.connect("clicked", self._on_add)
+        bar.append(self._add_btn)
 
-        save_btn = Gtk.Button(label=t("Save & Apply"))
-        save_btn.add_css_class("suggested-action")
-        save_btn.connect("clicked", self._on_save)
-        bar.append(save_btn)
+        self._save_btn = Gtk.Button(label=t("Save & Apply"))
+        self._save_btn.add_css_class("suggested-action")
+        self._save_btn.connect("clicked", self._on_save)
+        bar.append(self._save_btn)
 
         reload_btn = Gtk.Button()
         reload_btn.set_icon_name("view-refresh-symbolic")
@@ -287,6 +285,20 @@ class WorkspacesPage(Gtk.Box):
         while child := self._content.get_first_child():
             self._content.remove(child)
         self._rows.clear()
+
+        provider_missing = load_provider() is None
+        self._provider_banner.set_revealed(provider_missing)
+        self._add_btn.set_sensitive(not provider_missing)
+        self._save_btn.set_sensitive(not provider_missing)
+        if provider_missing:
+            self._monitor_names = []
+            self._workspaces = []
+            status = Adw.StatusPage()
+            status.set_icon_name("changes-prevent-symbolic")
+            status.set_title(t("Hyprland configuration provider required"))
+            status.set_description(t("Choose Yes or No in the provider dialog before editing configuration."))
+            self._content.append(status)
+            return
 
         self._monitor_names = _get_monitor_names()
         self._workspaces    = _load_workspaces()
@@ -377,6 +389,9 @@ class WorkspacesPage(Gtk.Box):
         data = [r.get_data() for r in self._rows]
         _save_workspaces(data)
         GLib.timeout_add(400, self._load)
+
+    def on_provider_changed(self):
+        self._load()
 
 
 # ── Einzelne Workspace-Zeile ──────────────────────────────────────────────────

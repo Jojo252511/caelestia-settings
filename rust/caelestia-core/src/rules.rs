@@ -145,6 +145,23 @@ windowrule = float, class:^(after)$
     }
 
     #[test]
+    fn begin_and_end_markers_toggle_managed_false_true_false() {
+        let input = "\
+windowrule = float true, match: class before
+# BEGIN Caelestia Settings managed block: window-rules
+windowrule = float true, match: class managed
+# END Caelestia Settings managed block: window-rules
+windowrule = float true, match: class after
+";
+        let rules = parse_rules_conf(input);
+        assert_eq!(rules.len(), 3);
+        assert_eq!(
+            rules.iter().map(|rule| rule.managed).collect::<Vec<_>>(),
+            [false, true, false]
+        );
+    }
+
+    #[test]
     fn skips_blank_lines_comments_and_non_windowrule_lines() {
         let input = "\n# just a comment
 bind = SUPER, T, exec, kitty

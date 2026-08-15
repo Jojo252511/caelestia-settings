@@ -80,6 +80,38 @@ class SaveAndLoadWorkspacesLuaTest(unittest.TestCase):
 
 
 class LoadWorkspacesDispatchTest(unittest.TestCase):
+    def test_returns_empty_without_provider_and_reads_no_config(self):
+        with (
+            mock.patch("src.pages.workspaces.load_provider", return_value=None),
+            mock.patch("src.pages.workspaces._load_workspaces_lua") as lua_mock,
+            mock.patch("src.pages.workspaces._load_workspaces_conf") as conf_mock,
+        ):
+            self.assertEqual(workspaces._load_workspaces(), [])
+        lua_mock.assert_not_called()
+        conf_mock.assert_not_called()
+
+    def test_page_is_locked_and_empty_without_provider(self):
+        page = workspaces.WorkspacesPage.__new__(workspaces.WorkspacesPage)
+        page._content = mock.MagicMock()
+        page._content.get_first_child.return_value = None
+        page._rows = []
+        page._provider_banner = mock.MagicMock()
+        page._add_btn = mock.MagicMock()
+        page._save_btn = mock.MagicMock()
+        status = mock.MagicMock()
+        with (
+            mock.patch("src.pages.workspaces.load_provider", return_value=None),
+            mock.patch("src.pages.workspaces._get_monitor_names") as monitors_mock,
+            mock.patch("src.pages.workspaces._load_workspaces") as workspaces_mock,
+            mock.patch("src.pages.workspaces.Adw.StatusPage", return_value=status),
+        ):
+            workspaces.WorkspacesPage._load(page)
+        monitors_mock.assert_not_called()
+        workspaces_mock.assert_not_called()
+        page._add_btn.set_sensitive.assert_called_once_with(False)
+        page._save_btn.set_sensitive.assert_called_once_with(False)
+        page._content.append.assert_called_once_with(status)
+
     def test_dispatches_to_lua_when_provider_is_lua(self):
         with (
             mock.patch("src.pages.workspaces.load_provider", return_value=hp.Provider.LUA),
@@ -88,6 +120,16 @@ class LoadWorkspacesDispatchTest(unittest.TestCase):
             result = workspaces._load_workspaces()
         m.assert_called_once()
         self.assertEqual(result, [_ws()])
+
+    def test_monitor_names_are_empty_without_provider(self):
+        with (
+            mock.patch("src.pages.workspaces.load_provider", return_value=None),
+            mock.patch("src.pages.workspaces.subprocess.run") as run_mock,
+            mock.patch("src.pages.workspaces.parse_monitors_conf") as conf_mock,
+        ):
+            self.assertEqual(workspaces._get_monitor_names(), [])
+        run_mock.assert_not_called()
+        conf_mock.assert_not_called()
 
     def test_dispatches_to_conf_when_provider_is_hyprlang(self):
         with (

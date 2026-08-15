@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import fcntl
 import gi
 from enum import Enum
@@ -40,6 +41,8 @@ from src.lang import t
 
 PROVIDER_CONFIG_FILE = CONFIG_DIR / "hyprland_provider.json"
 _PROVIDER_KEY = "hyprland_config_provider"
+LOCK_TIMEOUT_SECONDS = 2.0
+LOCK_POLL_SECONDS = 0.05
 
 
 class Provider(str, Enum):
@@ -113,13 +116,18 @@ LUA_PATHS: dict[str, Path] = {
 assert set(LEGACY_PATHS) == set(LUA_PATHS), "LEGACY_PATHS and LUA_PATHS must cover the same domains"
 
 
-def resolve_path(domain: str, provider: Provider) -> Path:
+def resolve_path(domain: str, provider: Provider | None) -> Path:
     """Returns the config file path for `domain` under the given provider.
 
     Raises KeyError for an unknown domain rather than guessing — a silently
     wrong path would risk reading or writing the wrong file.
     """
-    paths = LEGACY_PATHS if provider is Provider.HYPRLANG else LUA_PATHS
+    if provider is Provider.HYPRLANG:
+        paths = LEGACY_PATHS
+    elif provider is Provider.LUA:
+        paths = LUA_PATHS
+    else:
+        raise ValueError("A valid Hyprland configuration provider is required")
     return paths[domain]
 
 
@@ -143,6 +151,10 @@ class LuaWriteError(Exception):
 
 class ManagedBlockError(LuaWriteError):
     """The file's marker structure is ambiguous or was changed concurrently."""
+
+
+class LockTimeoutError(ManagedBlockError):
+    """Another settings process held the configuration lock for too long."""
 
 
 def _managed_block_markers(block_name: str, comment_prefix: str = "--") -> tuple[str, str]:
@@ -234,16 +246,18 @@ def _render_managed_content(
         if legacy_lines:
             if target is not None:
                 raise ManagedBlockError("Both legacy and begin/end managed markers are present")
-            start, stop, _ = legacy_lines[0]
+            start, _, _ = legacy_lines[0]
             spans = _line_spans(existing)
             index = next(i for i, span in enumerate(spans) if span[0] == start)
-            while index + 1 < len(spans):
-                candidate = spans[index + 1][2]
-                if legacy_line_predicate is None or not legacy_line_predicate(candidate):
-                    break
-                index += 1
-                stop = spans[index][1]
-            legacy_span = (start, stop)
+            remainder = spans[index + 1 :]
+            if legacy_line_predicate is None or any(
+                not legacy_line_predicate(candidate[2]) for candidate in remainder
+            ):
+                raise ManagedBlockError(
+                    "Legacy start-only marker is ambiguous; add a matching end marker "
+                    "before saving so manual directives cannot be overwritten."
+                )
+            legacy_span = (start, len(existing))
 
     if target is not None:
         return existing[: target[0]] + replacement + existing[target[1] :]
@@ -298,8 +312,58 @@ def _atomic_replace_locked(
 def _with_managed_write_lock(path: Path):
     lock_path = path.with_name(f".{path.name}.caelestia.lock")
     lock_file = open(lock_path, "a+b")
-    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-    return lock_file
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return lock_file
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                lock_file.close()
+                raise LockTimeoutError(
+                    f"Timed out waiting for configuration write lock: {path}"
+                ) from None
+            time.sleep(LOCK_POLL_SECONDS)
+
+
+def _rollback_and_reload(
+    path: Path,
+    *,
+    existed: bool,
+    original: bytes,
+    written: bytes,
+    first_error: RuntimeError,
+) -> None:
+    current = path.read_bytes() if path.exists() else b""
+    if current != written:
+        raise ManagedBlockError(
+            f"Reload failed and configuration changed concurrently; rollback aborted: {first_error}"
+        ) from first_error
+    if existed:
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f"{path.name}.", suffix=".rollback"
+        )
+        rollback_tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(original)
+            shutil.copystat(path, rollback_tmp)
+            os.replace(rollback_tmp, path)
+        except BaseException:
+            rollback_tmp.unlink(missing_ok=True)
+            raise
+    else:
+        path.unlink()
+    try:
+        reload_hyprland()
+    except RuntimeError as rollback_reload_error:
+        raise RuntimeError(
+            "Reload failed; configuration was rolled back, but rollback reload also failed: "
+            f"{first_error}; {rollback_reload_error}"
+        ) from first_error
+    raise RuntimeError(
+        f"Reload failed; configuration was rolled back and reloaded: {first_error}"
+    ) from first_error
 
 
 def managed_block_byte_range(path: Path, block_name: str) -> tuple[int, int] | None:
@@ -390,35 +454,16 @@ def write_managed_lua_block_and_reload(path: Path, block_name: str, managed_line
         try:
             reload_hyprland()
         except RuntimeError as first_error:
-            current = path.read_bytes() if path.exists() else b""
-            if current != new_content.encode("utf-8"):
-                raise ManagedBlockError(
-                    f"Reload failed and configuration changed concurrently; rollback aborted: {first_error}"
-                ) from first_error
-            if existed:
-                fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".rollback")
-                rollback_tmp = Path(tmp_name)
-                try:
-                    with os.fdopen(fd, "wb") as stream:
-                        stream.write(original)
-                    shutil.copystat(path, rollback_tmp)
-                    os.replace(rollback_tmp, path)
-                except BaseException:
-                    rollback_tmp.unlink(missing_ok=True)
-                    raise
-            else:
-                path.unlink()
-            try:
-                reload_hyprland()
-            except RuntimeError as rollback_reload_error:
-                raise RuntimeError(
-                    f"Reload failed; configuration was rolled back, but rollback reload also failed: "
-                    f"{first_error}; {rollback_reload_error}"
-                ) from first_error
-            raise RuntimeError(f"Reload failed; configuration was rolled back and reloaded: {first_error}") from first_error
+            _rollback_and_reload(
+                path,
+                existed=existed,
+                original=original,
+                written=new_content.encode("utf-8"),
+                first_error=first_error,
+            )
 
 
-def write_managed_legacy_block(
+def write_managed_legacy_block_and_reload(
     path: Path,
     block_name: str,
     managed_lines: list[str],
@@ -426,10 +471,11 @@ def write_managed_legacy_block(
     legacy_marker: str,
     legacy_line_predicate: Callable[[str], bool],
 ) -> None:
-    """Safely replace a # managed block, migrating one old start-only marker."""
+    """Atomically write a legacy block, reload, and roll back on reload failure."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with _with_managed_write_lock(path):
-        original = path.read_bytes() if path.exists() else b""
+        existed = path.exists()
+        original = path.read_bytes() if existed else b""
         new_content = _render_managed_content(
             original.decode("utf-8"),
             block_name,
@@ -439,6 +485,16 @@ def write_managed_legacy_block(
             legacy_line_predicate=legacy_line_predicate,
         )
         _atomic_replace_locked(path, new_content, original, None)
+        try:
+            reload_hyprland()
+        except RuntimeError as first_error:
+            _rollback_and_reload(
+                path,
+                existed=existed,
+                original=original,
+                written=new_content.encode("utf-8"),
+                first_error=first_error,
+            )
 
 
 def reload_hyprland() -> None:

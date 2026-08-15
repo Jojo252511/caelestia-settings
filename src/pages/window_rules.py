@@ -12,9 +12,8 @@ from src.hypr_provider import (
     Provider,
     load_provider,
     managed_block_byte_range,
-    reload_hyprland,
     resolve_path,
-    write_managed_legacy_block,
+    write_managed_legacy_block_and_reload,
     write_managed_lua_block,
     write_managed_lua_block_and_reload,
 )
@@ -113,7 +112,7 @@ def _generate_rules_lines(rules: dict) -> list[str]:
 
 
 def _write_rules_conf(new_lines: list[str]):
-    write_managed_legacy_block(
+    write_managed_legacy_block_and_reload(
         HYPR_RULES_CONF,
         RULES_CONF_BLOCK,
         new_lines,
@@ -202,9 +201,52 @@ def _load_window_rules_lua() -> list[dict]:
 def _load_existing_rules() -> list[dict]:
     """Provider-aware replacement for calling parse_rules_conf() directly:
     routes to the Lua reader under Provider.LUA, otherwise unchanged."""
-    if load_provider() is Provider.LUA:
+    provider = load_provider()
+    if provider is None:
+        return []
+    if provider is Provider.LUA:
         return _load_window_rules_lua()
     return parse_rules_conf()
+
+
+def _load_provider_page_state(provider: Provider | None) -> tuple[list[tuple[str, str]], dict, list[dict]]:
+    if provider is None:
+        return [], {}, []
+    if provider is Provider.LUA:
+        lua_workspaces = _load_workspaces_shared()
+        workspace_options = (
+            build_workspace_options(lua_workspaces) if lua_workspaces else _fallback_ws_options()
+        )
+    else:
+        workspace_options = parse_monitors_conf()["workspace_options"]
+    return workspace_options, load_window_rules_config(), _load_existing_rules()
+
+
+def _merge_imported_rules(saved_rules: dict, existing_rules: list[dict]) -> set[str]:
+    imported_keys = set()
+    for entry in existing_rules:
+        match_value = entry["match_val"]
+        if not match_value:
+            continue
+        for wm_class in match_value.split("|"):
+            wm_class = wm_class.strip().lstrip("^(").rstrip(")$")
+            if not wm_class or wm_class in saved_rules:
+                continue
+            rule = entry["rule"].strip()
+            workspace_rule = ""
+            float_rule = "default"
+            if rule.startswith("workspace "):
+                workspace_rule = rule.split("workspace ", 1)[1].strip()
+            elif rule.startswith("float "):
+                float_rule = rule.split("float ", 1)[1].strip()
+            if workspace_rule or float_rule != "default":
+                saved_rules[wm_class] = {
+                    "match_type": entry.get("match_type", "class"),
+                    "workspace": workspace_rule or "default",
+                    "float": float_rule,
+                }
+                imported_keys.add(wm_class)
+    return imported_keys
 
 
 def _build_window_rule_lua_tables(key: str, settings: dict) -> list[dict]:
@@ -258,51 +300,17 @@ class WindowRulesPage(Gtk.Box):
         self.main_window = main_window
         self.set_orientation(Gtk.Orientation.VERTICAL)
 
-        # Workspace-Optionen dynamisch aus dem aktiven Provider — Lua nutzt
-        # workspaces.py's eigene, bereits providerfähige Workspace-Liste aus
-        # M3 statt eines zweiten, unabhängigen Lua-Workspace-Parsers.
-        if load_provider() is Provider.LUA:
-            lua_workspaces = _load_workspaces_shared()
-            self._workspace_options: list[tuple[str, str]] = (
-                build_workspace_options(lua_workspaces) if lua_workspaces else _fallback_ws_options()
-            )
-        else:
-            mon_data = parse_monitors_conf()
-            self._workspace_options = mon_data["workspace_options"]
+        self._provider_banner = Adw.Banner()
+        self._provider_banner.set_title(t("Choose a Hyprland configuration provider to unlock this page."))
+        self.append(self._provider_banner)
 
-        # Lade gespeichertes JSON als Basis (diese werden beim Speichern geschrieben)
-        self.saved_rules = load_window_rules_config()
-
-        # Bestehende Regeln providerabhängig einlesen (rules.conf / rules.lua)
-        self._existing_rules = _load_existing_rules()
-
-        # Aus rules.conf gelesene Regeln NUR für Dropdown-Vorauswahl nutzen —
-        # _imported_keys merkt sich welche Klassen NUR aus der rules.conf kommen,
-        # damit sie beim Speichern NICHT nochmal geschrieben werden.
-        self._imported_keys: set[str] = set()
-        for entry in self._existing_rules:
-            mv = entry["match_val"]
-            if not mv:
-                continue
-            for cls in mv.split("|"):
-                cls = cls.strip().lstrip("^(").rstrip(")$")
-                if cls and cls not in self.saved_rules:
-                    rule = entry["rule"].strip()
-                    ws_rule    = ""
-                    float_rule = "default"
-                    if rule.startswith("workspace "):
-                        ws_rule = rule.split("workspace ", 1)[1].strip()
-                    elif rule.startswith("float "):
-                        float_rule = rule.split("float ", 1)[1].strip()
-                    if ws_rule or float_rule != "default":
-                        self.saved_rules[cls] = {
-                            "match_type": entry.get("match_type", "class"),
-                            "workspace":  ws_rule or "default",
-                            "float":      float_rule,
-                        }
-                        self._imported_keys.add(cls)
+        provider = load_provider()
+        self._workspace_options, self.saved_rules, self._existing_rules = _load_provider_page_state(provider)
+        self._imported_keys = _merge_imported_rules(self.saved_rules, self._existing_rules)
         self._rows: dict[str, "AppRuleRow"] = {}
         self._conflicts: list[str] = []
+        self._scan_started = False
+        self._provider_banner.set_revealed(provider is None)
 
         # Notebook mit zwei Tabs
         notebook = Gtk.Notebook()
@@ -325,10 +333,11 @@ class WindowRulesPage(Gtk.Box):
         self.search_entry.set_placeholder_text(t("Search app..."))
         self.search_entry.connect("search-changed", self._on_search_changed)
         bar.append(self.search_entry)
-        save_btn = Gtk.Button(label=t("Save & Apply"))
-        save_btn.add_css_class("suggested-action")
-        save_btn.connect("clicked", self._on_save_clicked)
-        bar.append(save_btn)
+        self._save_btn = Gtk.Button(label=t("Save & Apply"))
+        self._save_btn.add_css_class("suggested-action")
+        self._save_btn.connect("clicked", self._on_save_clicked)
+        self._save_btn.set_sensitive(load_provider() is not None)
+        bar.append(self._save_btn)
         box.append(bar)
 
         # Konflikt-Banner
@@ -353,11 +362,22 @@ class WindowRulesPage(Gtk.Box):
         self.spinner.set_halign(Gtk.Align.CENTER)
         self.spinner.set_size_request(-1, 48)
         box.append(self.spinner)
-        self.spinner.start()
-        threading.Thread(target=lambda: GLib.idle_add(
-            self._populate_list, _scan_desktop_files()
-        ), daemon=True).start()
+        if load_provider() is not None:
+            self._start_app_scan()
+        else:
+            self.spinner.set_visible(False)
         return box
+
+    def _start_app_scan(self):
+        if self._scan_started:
+            return
+        self._scan_started = True
+        self.spinner.set_visible(True)
+        self.spinner.start()
+        threading.Thread(
+            target=lambda: GLib.idle_add(self._populate_list, _scan_desktop_files()),
+            daemon=True,
+        ).start()
 
     def _populate_list(self, apps: list[dict]):
         self.spinner.stop()
@@ -446,7 +466,6 @@ class WindowRulesPage(Gtk.Box):
                 _save_window_rules_lua_and_reload(rules)
             else:
                 _write_rules_conf(_generate_rules_lines(rules))
-                reload_hyprland()
         except Exception as e:
             self.main_window.add_toast(Adw.Toast.new(f"{t('Error:')} {e}"))
             btn.set_sensitive(True)
@@ -483,14 +502,18 @@ class WindowRulesPage(Gtk.Box):
         return box
 
     def _refresh_existing_tab(self):
-        provider = load_provider() or Provider.HYPRLANG
-        rules_path = resolve_path("rules", provider)
-        desc = (
-            t("All hl.window_rule(...) entries from {path}  –  🔒 manual  /  ⚙ managed by this app")
-            if provider is Provider.LUA
-            else t("All windowrule entries from {path}  –  🔒 manual  /  ⚙ managed by this app")
-        )
-        self._existing_desc_label.set_markup(f"<small>{GLib.markup_escape_text(desc.format(path=rules_path))}</small>")
+        provider = load_provider()
+        if provider is None:
+            rules_path = ""
+            desc = t("Choose Yes or No in the provider dialog before reading configuration.")
+        else:
+            rules_path = resolve_path("rules", provider)
+            desc = (
+                t("All hl.window_rule(...) entries from {path}  –  🔒 manual  /  ⚙ managed by this app")
+                if provider is Provider.LUA
+                else t("All windowrule entries from {path}  –  🔒 manual  /  ⚙ managed by this app")
+            ).format(path=rules_path)
+        self._existing_desc_label.set_markup(f"<small>{GLib.markup_escape_text(desc)}</small>")
 
         # AdwPreferencesGroup erlaubt kein remove() auf seine Rows —
         # stattdessen die Group komplett ersetzen.
@@ -501,8 +524,16 @@ class WindowRulesPage(Gtk.Box):
 
         if not self._existing_rules:
             new_group.add(Adw.ActionRow(
-                title=t("No windowrule entries found."),
-                subtitle=str(rules_path)
+                title=(
+                    t("Hyprland configuration provider required")
+                    if provider is None
+                    else t("No windowrule entries found.")
+                ),
+                subtitle=(
+                    t("Choose Yes or No in the provider dialog before editing configuration.")
+                    if provider is None
+                    else str(rules_path)
+                ),
             ))
         else:
             for entry in self._existing_rules:
@@ -518,6 +549,17 @@ class WindowRulesPage(Gtk.Box):
         if parent:
             parent.set_child(new_group)
         self._existing_group = new_group
+
+    def on_provider_changed(self):
+        provider = load_provider()
+        self._provider_banner.set_revealed(provider is None)
+        self._save_btn.set_sensitive(provider is not None)
+        if provider is None:
+            return
+        self._workspace_options, self.saved_rules, self._existing_rules = _load_provider_page_state(provider)
+        self._imported_keys = _merge_imported_rules(self.saved_rules, self._existing_rules)
+        self._refresh_existing_tab()
+        self._start_app_scan()
 
 
 # ── Einzelne App-Zeile ────────────────────────────────────────────────────────
