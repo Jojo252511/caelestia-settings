@@ -6,8 +6,8 @@
 //! straight through. All real logic (parsing, conflict detection, PWM
 //! math) stays in `caelestia-core`, which keeps being pure-Rust
 //! unit-testable without Python or a compiled extension module anywhere
-//! in the loop — this crate has no `#[cfg(test)]` of its own for that
-//! reason; a successful `cargo build` / `maturin develop` *is* its test.
+//! in the loop. Focused wrapper tests below additionally verify conversion,
+//! error mapping, and Python module registration.
 
 use std::collections::HashMap;
 
@@ -444,4 +444,79 @@ fn caelestia_core_pymodule(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(find_lua_calls, m)?)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Once;
+
+    fn with_python<F: for<'py> FnOnce(Python<'py>)>(test: F) {
+        static START: Once = Once::new();
+        START.call_once(Python::initialize);
+        Python::attach(test);
+    }
+
+    #[test]
+    fn lua_table_wrapper_converts_both_directions() {
+        with_python(|py| {
+            let parsed = parse_lua_table(py, r#"{ output = "DP-1", enabled = true }"#).unwrap();
+            let dict = parsed.bind(py).cast::<PyDict>().unwrap();
+            assert_eq!(
+                dict.get_item("output")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "DP-1"
+            );
+            assert!(
+                dict.get_item("enabled")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
+
+            let rendered = render_lua_table(dict.as_any()).unwrap();
+            assert_eq!(rendered, r#"{ output = "DP-1", enabled = true }"#);
+        });
+    }
+
+    #[test]
+    fn lua_wrapper_maps_parse_failures_to_value_error() {
+        with_python(|py| {
+            let error = parse_lua_table(py, "{").unwrap_err();
+            assert!(error.is_instance_of::<PyValueError>(py));
+        });
+    }
+
+    #[test]
+    fn find_calls_wrapper_returns_exact_spans() {
+        let source = r#"local x = 1
+hl.monitor({ output = "DP-1" })"#;
+        let found = find_lua_calls(source, "hl.monitor");
+        assert_eq!(found.len(), 1);
+        assert_eq!(&source[found[0].0..found[0].1], found[0].2);
+    }
+
+    #[test]
+    fn module_registers_lua_api() {
+        with_python(|py| {
+            let module = PyModule::new(py, "caelestia_core").unwrap();
+            caelestia_core_pymodule(&module).unwrap();
+            for name in [
+                "parse_lua_table",
+                "render_lua_table",
+                "parse_lua_call",
+                "render_lua_call",
+                "find_lua_calls",
+            ] {
+                assert!(
+                    module.getattr(name).is_ok(),
+                    "missing Python wrapper {name}"
+                );
+            }
+        });
+    }
 }

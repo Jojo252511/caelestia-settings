@@ -108,10 +108,95 @@ class ManagedLuaBlockTest(unittest.TestCase):
         leftovers = list(self.path.parent.glob("*.tmp"))
         self.assertEqual(leftovers, [])
 
-    def test_skips_validation_when_luac_not_installed(self):
+    def test_refuses_write_without_luac_and_performs_no_write(self):
+        missing_parent = Path(self._tmpdir.name) / "missing" / "monitors.lua"
         with mock.patch("src.hypr_provider.shutil.which", return_value=None):
-            hp.write_managed_lua_block(self.path, "monitors", ["hl.monitor({})"])
-        self.assertTrue(self.path.exists())
+            with self.assertRaises(hp.LuaWriteError):
+                hp.write_managed_lua_block(missing_parent, "monitors", ["hl.monitor({})"])
+        self.assertFalse(missing_parent.parent.exists())
+
+    def test_rejects_damaged_duplicate_nested_and_reversed_markers(self):
+        cases = [
+            "-- BEGIN Caelestia Settings managed block: monitors\n",
+            "-- END Caelestia Settings managed block: monitors\n",
+            (
+                "-- BEGIN Caelestia Settings managed block: monitors\n"
+                "-- BEGIN Caelestia Settings managed block: workspaces\n"
+                "-- END Caelestia Settings managed block: workspaces\n"
+                "-- END Caelestia Settings managed block: monitors\n"
+            ),
+            (
+                "-- BEGIN Caelestia Settings managed block: monitors\n"
+                "-- END Caelestia Settings managed block: monitors\n"
+                "-- BEGIN Caelestia Settings managed block: monitors\n"
+                "-- END Caelestia Settings managed block: monitors\n"
+            ),
+            "-- BEGIN Caelestia Settings managed block:\n",
+        ]
+        for content in cases:
+            with self.subTest(content=content):
+                self.path.write_text(content)
+                with self.assertRaises(hp.ManagedBlockError):
+                    hp.write_managed_lua_block(self.path, "monitors", ["hl.monitor({})"])
+                self.assertEqual(self.path.read_text(), content)
+
+    def test_preserves_crlf_prefix_and_suffix_exactly(self):
+        before = (
+            b"local before = true\r\n"
+            b"-- BEGIN Caelestia Settings managed block: monitors\r\n"
+            b"hl.monitor({ output = \"OLD\" })\r\n"
+            b"-- END Caelestia Settings managed block: monitors\r\n"
+            b"local after = true\r\n"
+        )
+        self.path.write_bytes(before)
+        hp.write_managed_lua_block(self.path, "monitors", ['hl.monitor({ output = "NEW" })'])
+        after = self.path.read_bytes()
+        self.assertTrue(after.startswith(b"local before = true\r\n"))
+        self.assertTrue(after.endswith(b"local after = true\r\n"))
+        self.assertIn(b"NEW", after)
+        self.assertNotIn(b"OLD", after)
+
+    def test_backups_are_collision_free(self):
+        self.path.write_text("-- original\n")
+        hp.write_managed_lua_block(self.path, "monitors", ["hl.monitor({})"])
+        hp.write_managed_lua_block(self.path, "monitors", ["hl.monitor({ output = \"DP-2\" })"])
+        backups = list(self.path.parent.glob("monitors.lua.bak_*"))
+        self.assertEqual(len(backups), 2)
+        self.assertEqual(len({backup.name for backup in backups}), 2)
+
+    def test_replacement_preserves_file_mode(self):
+        self.path.write_text("-- original\n")
+        self.path.chmod(0o640)
+        hp.write_managed_lua_block(self.path, "monitors", ["hl.monitor({})"])
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o640)
+
+    def test_detects_change_made_while_candidate_is_validated(self):
+        self.path.write_text("-- original\n")
+        ok = mock.MagicMock(returncode=0, stderr="")
+
+        def mutate_during_validation(*_args, **_kwargs):
+            self.path.write_text("-- concurrent edit\n")
+            return ok
+
+        with mock.patch("src.hypr_provider.subprocess.run", side_effect=mutate_during_validation):
+            with self.assertRaises(hp.ManagedBlockError):
+                hp.write_managed_lua_block(self.path, "monitors", ["hl.monitor({})"])
+        self.assertEqual(self.path.read_text(), "-- concurrent edit\n")
+
+    def test_reload_failure_rolls_back_and_reloads_rollback(self):
+        self.path.write_text("-- original\n")
+        reloads = [RuntimeError("bad generated config"), None]
+
+        def reload_side_effect():
+            result = reloads.pop(0)
+            if result is not None:
+                raise result
+
+        with mock.patch("src.hypr_provider.reload_hyprland", side_effect=reload_side_effect) as reload_mock:
+            with self.assertRaisesRegex(RuntimeError, "rolled back and reloaded"):
+                hp.write_managed_lua_block_and_reload(self.path, "monitors", ["hl.monitor({})"])
+        self.assertEqual(self.path.read_text(), "-- original\n")
+        self.assertEqual(reload_mock.call_count, 2)
 
     @unittest.skipUnless(HAS_LUAC, "luac not installed")
     def test_real_luac_accepts_valid_generated_lua(self):

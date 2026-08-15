@@ -112,5 +112,54 @@ class ResolvePathTest(unittest.TestCase):
             hp.resolve_path("does-not-exist", hp.Provider.HYPRLANG)
 
 
+class ProviderDialogTest(unittest.TestCase):
+    class FakeDialog:
+        def __init__(self, **_kwargs):
+            self.callback = None
+            self.close_response = None
+
+        def set_transient_for(self, _parent):
+            pass
+
+        def set_modal(self, _modal):
+            pass
+
+        def add_response(self, _response_id, _label):
+            pass
+
+        def set_close_response(self, response_id):
+            self.close_response = response_id
+
+        def connect(self, _signal, callback):
+            self.callback = callback
+
+        def present(self):
+            pass
+
+    def _respond(self, response):
+        dialog = self.FakeDialog()
+        chosen = []
+        with (
+            mock.patch.object(hp.Adw, "MessageDialog", return_value=dialog),
+            mock.patch.object(hp, "save_provider") as save,
+        ):
+            hp.prompt_provider_choice(object(), chosen.append)
+            dialog.callback(dialog, response)
+            return dialog, chosen, save.call_args_list
+
+    def test_close_does_not_save_or_choose(self):
+        dialog, chosen, save_calls = self._respond("cancel")
+        self.assertEqual(dialog.close_response, "cancel")
+        self.assertEqual(save_calls, [])
+        self.assertEqual(chosen, [])
+
+    def test_only_explicit_yes_and_no_choose_provider(self):
+        for response, expected in (("yes", hp.Provider.LUA), ("no", hp.Provider.HYPRLANG)):
+            with self.subTest(response=response):
+                _dialog, chosen, save_calls = self._respond(response)
+                self.assertEqual(save_calls, [mock.call(expected)])
+                self.assertEqual(chosen, [expected])
+
+
 if __name__ == "__main__":
     unittest.main()

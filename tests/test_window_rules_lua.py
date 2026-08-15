@@ -320,7 +320,7 @@ class OnSaveClickedLuaTest(unittest.TestCase):
         with (
             mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.LUA),
             mock.patch(
-                "src.pages.window_rules._save_window_rules_lua",
+                "src.pages.window_rules._save_window_rules_lua_and_reload",
                 side_effect=hp.LuaWriteError("bad lua"),
             ),
             mock.patch("src.pages.window_rules.reload_hyprland") as reload_mock,
@@ -339,8 +339,10 @@ class OnSaveClickedLuaTest(unittest.TestCase):
         page, btn = self._make_page({"a": self._row("kitty", _rule(workspace="2"))})
         with (
             mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.LUA),
-            mock.patch("src.pages.window_rules._save_window_rules_lua"),
-            mock.patch("src.pages.window_rules.reload_hyprland", side_effect=RuntimeError("hyprctl broke")),
+            mock.patch(
+                "src.pages.window_rules._save_window_rules_lua_and_reload",
+                side_effect=RuntimeError("hyprctl broke"),
+            ),
             mock.patch("src.pages.window_rules.save_window_rules_config") as cache_mock,
         ):
             wr.WindowRulesPage._on_save_clicked(page, btn)
@@ -355,21 +357,19 @@ class OnSaveClickedLuaTest(unittest.TestCase):
         with (
             mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.LUA),
             mock.patch(
-                "src.pages.window_rules._save_window_rules_lua",
-                side_effect=lambda r: calls.append(("save", dict(r))),
-            ),
-            mock.patch(
-                "src.pages.window_rules.reload_hyprland", side_effect=lambda: calls.append(("reload",))
+                "src.pages.window_rules._save_window_rules_lua_and_reload",
+                side_effect=lambda r: calls.append(("transaction", dict(r))),
             ),
             mock.patch(
                 "src.pages.window_rules.save_window_rules_config",
                 side_effect=lambda r: calls.append(("cache", dict(r))),
             ),
             mock.patch("src.pages.window_rules._load_existing_rules", return_value=[]),
+            mock.patch.object(wr.WindowRulesPage, "_refresh_existing_tab"),
         ):
             wr.WindowRulesPage._on_save_clicked(page, btn)
 
-        self.assertEqual([c[0] for c in calls], ["save", "reload", "cache"])
+        self.assertEqual([c[0] for c in calls], ["transaction", "cache"])
         page.main_window.add_toast.assert_called_once()
 
     def test_legacy_reload_failure_now_surfaces_as_toast(self):
@@ -401,12 +401,12 @@ class OnSaveClickedLuaTest(unittest.TestCase):
         with (
             mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.LUA),
             mock.patch(
-                "src.pages.window_rules._save_window_rules_lua",
+                "src.pages.window_rules._save_window_rules_lua_and_reload",
                 side_effect=lambda r: captured.update(r),
             ),
-            mock.patch("src.pages.window_rules.reload_hyprland"),
             mock.patch("src.pages.window_rules.save_window_rules_config"),
             mock.patch("src.pages.window_rules._load_existing_rules", return_value=[]),
+            mock.patch.object(wr.WindowRulesPage, "_refresh_existing_tab"),
         ):
             wr.WindowRulesPage._on_save_clicked(page, btn)
 
@@ -423,12 +423,12 @@ class OnSaveClickedLuaTest(unittest.TestCase):
         with (
             mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.LUA),
             mock.patch(
-                "src.pages.window_rules._save_window_rules_lua",
+                "src.pages.window_rules._save_window_rules_lua_and_reload",
                 side_effect=lambda r: captured.update(r),
             ),
-            mock.patch("src.pages.window_rules.reload_hyprland"),
             mock.patch("src.pages.window_rules.save_window_rules_config"),
             mock.patch("src.pages.window_rules._load_existing_rules", return_value=[]),
+            mock.patch.object(wr.WindowRulesPage, "_refresh_existing_tab"),
         ):
             wr.WindowRulesPage._on_save_clicked(page, btn)
 
@@ -446,7 +446,11 @@ class ExistingTabProviderPathTest(unittest.TestCase):
 
     def test_uses_lua_path_under_lua_provider(self):
         page = self._make_page()
-        with mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.LUA):
+        with (
+            mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.LUA),
+            mock.patch("src.pages.window_rules.Adw.PreferencesGroup", return_value=mock.MagicMock()),
+            mock.patch("src.pages.window_rules.Adw.ActionRow", return_value=mock.MagicMock()),
+        ):
             wr.WindowRulesPage._refresh_existing_tab(page)
         markup = page._existing_desc_label.set_markup.call_args[0][0]
         self.assertIn(str(hp.LUA_PATHS["rules"]), markup)
@@ -454,7 +458,11 @@ class ExistingTabProviderPathTest(unittest.TestCase):
 
     def test_uses_conf_path_under_hyprlang_provider(self):
         page = self._make_page()
-        with mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.HYPRLANG):
+        with (
+            mock.patch("src.pages.window_rules.load_provider", return_value=hp.Provider.HYPRLANG),
+            mock.patch("src.pages.window_rules.Adw.PreferencesGroup", return_value=mock.MagicMock()),
+            mock.patch("src.pages.window_rules.Adw.ActionRow", return_value=mock.MagicMock()),
+        ):
             wr.WindowRulesPage._refresh_existing_tab(page)
         markup = page._existing_desc_label.set_markup.call_args[0][0]
         self.assertIn(str(hp.LEGACY_PATHS["rules"]), markup)
@@ -514,7 +522,8 @@ class LegacyConfRegressionTest(unittest.TestCase):
                 wr._write_rules_conf(wr._generate_rules_lines({"kitty": _rule(workspace="2")}))
             content = path.read_text()
             self.assertIn("# manual rule", content)
-            self.assertIn(wr.MANAGED_MARKER, content)
+            self.assertIn("# BEGIN Caelestia Settings managed block: window-rules", content)
+            self.assertIn("# END Caelestia Settings managed block: window-rules", content)
             self.assertIn("windowrule = workspace 2, match:class kitty", content)
 
 

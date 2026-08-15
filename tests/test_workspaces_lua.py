@@ -103,22 +103,24 @@ class SaveWorkspacesErrorPropagationTest(unittest.TestCase):
         with (
             mock.patch("src.pages.workspaces.load_provider", return_value=hp.Provider.LUA),
             mock.patch(
-                "src.pages.workspaces._save_workspaces_lua",
+                "src.pages.workspaces._save_workspaces_lua_and_reload",
                 side_effect=hp.LuaWriteError("invalid"),
             ),
         ):
             with self.assertRaises(hp.LuaWriteError):
                 workspaces._save_workspaces([_ws()])
 
-    def test_reload_runs_after_successful_lua_save(self):
+    def test_transactional_writer_is_used_for_lua_save(self):
         calls = []
         with (
             mock.patch("src.pages.workspaces.load_provider", return_value=hp.Provider.LUA),
-            mock.patch("src.pages.workspaces._save_workspaces_lua", side_effect=lambda d: calls.append("save")),
-            mock.patch("src.pages.workspaces.reload_hyprland", side_effect=lambda: calls.append("reload")),
+            mock.patch(
+                "src.pages.workspaces._save_workspaces_lua_and_reload",
+                side_effect=lambda d: calls.append("transaction"),
+            ),
         ):
             workspaces._save_workspaces([_ws()])
-        self.assertEqual(calls, ["save", "reload"])
+        self.assertEqual(calls, ["transaction"])
 
 
 if __name__ == "__main__":

@@ -126,7 +126,7 @@ class OnApplyLuaErrorHandlingTest(unittest.TestCase):
 
         with (
             mock.patch("src.pages.monitor.load_provider", return_value=hp.Provider.LUA),
-            mock.patch("src.pages.monitor.reload_hyprland", side_effect=RuntimeError("boom")),
+            mock.patch("src.pages.monitor._save_monitors_lua_and_reload", side_effect=RuntimeError("boom")),
         ):
             monitor.MonitorPage._on_apply(page, mock.MagicMock())
 

@@ -22,14 +22,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime
+import fcntl
+import gi
 from enum import Enum
 from pathlib import Path
 from typing import Callable
 
+gi.require_version("Adw", "1")
 from gi.repository import Adw
 
 from src.config import CONFIG_DIR
@@ -138,26 +141,165 @@ class LuaWriteError(Exception):
     original file on disk is left completely untouched in that case."""
 
 
-def _managed_block_markers(block_name: str) -> tuple[str, str]:
+class ManagedBlockError(LuaWriteError):
+    """The file's marker structure is ambiguous or was changed concurrently."""
+
+
+def _managed_block_markers(block_name: str, comment_prefix: str = "--") -> tuple[str, str]:
     return (
-        f"-- BEGIN Caelestia Settings managed block: {block_name}",
-        f"-- END Caelestia Settings managed block: {block_name}",
+        f"{comment_prefix} BEGIN Caelestia Settings managed block: {block_name}",
+        f"{comment_prefix} END Caelestia Settings managed block: {block_name}",
     )
 
 
-def _find_managed_block(lines: list[str], block_name: str) -> tuple[int, int] | None:
-    """Returns (begin_index, end_index) of the named block's marker lines,
-    or None if the pair isn't present (missing, only one marker, or in the
-    wrong order) — callers then treat it as "no existing block"."""
-    begin, end = _managed_block_markers(block_name)
+def _line_spans(text: str) -> list[tuple[int, int, str]]:
+    spans = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        end = offset + len(line)
+        spans.append((offset, end, line.rstrip("\r\n")))
+        offset = end
+    if offset < len(text):
+        spans.append((offset, len(text), text[offset:]))
+    return spans
+
+
+def _scan_managed_blocks(text: str, comment_prefix: str) -> dict[str, tuple[int, int, int, int]]:
+    """Validate all markers and return full/content character ranges by name."""
+    marker_prefix = re.escape(comment_prefix)
+    marker_re = re.compile(
+        rf"^{marker_prefix} (BEGIN|END) Caelestia Settings managed block: ([A-Za-z0-9_.-]+)$"
+    )
+    sentinel = f"{comment_prefix} "
+    blocks = {}
+    open_block = None
+
+    for start, end, body in _line_spans(text):
+        stripped = body.strip()
+        if "Caelestia Settings managed block:" not in stripped:
+            continue
+        match = marker_re.fullmatch(stripped)
+        if match is None or not stripped.startswith(sentinel):
+            raise ManagedBlockError(f"Malformed managed-block marker in configuration: {stripped!r}")
+        kind, name = match.groups()
+        if kind == "BEGIN":
+            if open_block is not None:
+                raise ManagedBlockError(f"Nested managed blocks are not allowed ({open_block[0]!r}, {name!r})")
+            if name in blocks:
+                raise ManagedBlockError(f"Duplicate managed block: {name!r}")
+            open_block = (name, start, end)
+            continue
+        if open_block is None:
+            raise ManagedBlockError(f"Managed block ends before it begins: {name!r}")
+        open_name, full_start, content_start = open_block
+        if name != open_name:
+            raise ManagedBlockError(f"Managed block {open_name!r} is closed by marker for {name!r}")
+        blocks[name] = (full_start, end, content_start, start)
+        open_block = None
+
+    if open_block is not None:
+        raise ManagedBlockError(f"Managed block has no end marker: {open_block[0]!r}")
+    return blocks
+
+
+def _newline_for(text: str) -> str:
+    match = re.search(r"\r\n|\n|\r", text)
+    return match.group(0) if match else "\n"
+
+
+def _render_managed_content(
+    existing: str,
+    block_name: str,
+    managed_lines: list[str],
+    *,
+    comment_prefix: str,
+    legacy_marker: str | None = None,
+    legacy_line_predicate: Callable[[str], bool] | None = None,
+) -> str:
+    for line in managed_lines:
+        if "\n" in line or "\r" in line:
+            raise ManagedBlockError("Managed block entries must be individual lines")
+
+    blocks = _scan_managed_blocks(existing, comment_prefix)
+    newline = _newline_for(existing)
+    begin, end = _managed_block_markers(block_name, comment_prefix)
+    replacement = newline.join([begin, *managed_lines, end]) + newline
+
+    target = blocks.get(block_name)
+    legacy_span = None
+    if legacy_marker is not None:
+        legacy_lines = [span for span in _line_spans(existing) if span[2].strip() == legacy_marker]
+        if len(legacy_lines) > 1:
+            raise ManagedBlockError(f"Duplicate legacy managed marker: {legacy_marker!r}")
+        if legacy_lines:
+            if target is not None:
+                raise ManagedBlockError("Both legacy and begin/end managed markers are present")
+            start, stop, _ = legacy_lines[0]
+            spans = _line_spans(existing)
+            index = next(i for i, span in enumerate(spans) if span[0] == start)
+            while index + 1 < len(spans):
+                candidate = spans[index + 1][2]
+                if legacy_line_predicate is None or not legacy_line_predicate(candidate):
+                    break
+                index += 1
+                stop = spans[index][1]
+            legacy_span = (start, stop)
+
+    if target is not None:
+        return existing[: target[0]] + replacement + existing[target[1] :]
+    if legacy_span is not None:
+        return existing[: legacy_span[0]] + replacement + existing[legacy_span[1] :]
+    if not existing:
+        return replacement
+    separator = "" if existing.endswith(("\n", "\r")) else newline
+    if not existing.endswith(newline * 2):
+        separator += newline
+    return existing + separator + replacement
+
+
+def _create_backup(path: Path, original: bytes) -> Path:
+    fd, backup_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.bak_")
+    backup = Path(backup_name)
     try:
-        b = next(i for i, line in enumerate(lines) if line.strip() == begin)
-        e = next(i for i, line in enumerate(lines) if line.strip() == end)
-    except StopIteration:
-        return None
-    if e <= b:
-        return None
-    return b, e
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(original)
+        shutil.copystat(path, backup)
+    except BaseException:
+        backup.unlink(missing_ok=True)
+        raise
+    return backup
+
+
+def _atomic_replace_locked(
+    path: Path,
+    new_content: str,
+    original: bytes,
+    validator: Callable[[Path], None] | None,
+) -> None:
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(new_content.encode("utf-8"))
+        if validator is not None:
+            validator(tmp_path)
+        current = path.read_bytes() if path.exists() else b""
+        if current != original:
+            raise ManagedBlockError(f"Configuration changed concurrently: {path}")
+        if path.exists():
+            _create_backup(path, original)
+            shutil.copystat(path, tmp_path)
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _with_managed_write_lock(path: Path):
+    lock_path = path.with_name(f".{path.name}.caelestia.lock")
+    lock_file = open(lock_path, "a+b")
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    return lock_file
 
 
 def managed_block_byte_range(path: Path, block_name: str) -> tuple[int, int] | None:
@@ -171,15 +313,11 @@ def managed_block_byte_range(path: Path, block_name: str) -> tuple[int, int] | N
     """
     if not path.exists():
         return None
-    text = path.read_text()
-    kept_lines = text.splitlines(keepends=True)
-    markers = _find_managed_block([line.rstrip("\n") for line in kept_lines], block_name)
-    if markers is None:
+    text = path.read_bytes().decode("utf-8")
+    target = _scan_managed_blocks(text, "--").get(block_name)
+    if target is None:
         return None
-    b, e = markers
-    start = sum(len(line) for line in kept_lines[: b + 1])
-    end = sum(len(line) for line in kept_lines[:e])
-    return start, end
+    return len(text[: target[2]].encode()), len(text[: target[3]].encode())
 
 
 def read_managed_lua_block(path: Path, block_name: str) -> list[str]:
@@ -187,12 +325,11 @@ def read_managed_lua_block(path: Path, block_name: str) -> list[str]:
     `path`, or `[]` if the file or the block doesn't exist yet."""
     if not path.exists():
         return []
-    lines = path.read_text().splitlines()
-    markers = _find_managed_block(lines, block_name)
-    if markers is None:
+    text = path.read_bytes().decode("utf-8")
+    target = _scan_managed_blocks(text, "--").get(block_name)
+    if target is None:
         return []
-    b, e = markers
-    return lines[b + 1 : e]
+    return text[target[2] : target[3]].splitlines()
 
 
 def write_managed_lua_block(path: Path, block_name: str, managed_lines: list[str]) -> None:
@@ -208,44 +345,100 @@ def write_managed_lua_block(path: Path, block_name: str, managed_lines: list[str
     exactly as it was — this function either fully succeeds or changes
     nothing.
     """
-    begin, end = _managed_block_markers(block_name)
-    existing = path.read_text() if path.exists() else ""
-    lines = existing.splitlines()
-    markers = _find_managed_block(lines, block_name)
-
-    block = [begin, *managed_lines, end]
-    if markers is None:
-        prefix = lines + ([""] if lines and lines[-1].strip() else [])
-        new_lines = prefix + block
-    else:
-        b, e = markers
-        new_lines = lines[:b] + block + lines[e + 1 :]
-
-    new_content = "\n".join(new_lines) + "\n"
-
+    luac = shutil.which("luac")
+    if luac is None:
+        raise LuaWriteError(t("Lua compiler (luac) is required; changes were not applied."))
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        shutil.copy2(path, path.with_name(f"{path.name}.bak_{ts}"))
+    with _with_managed_write_lock(path):
+        original = path.read_bytes() if path.exists() else b""
+        existing = original.decode("utf-8")
+        new_content = _render_managed_content(
+            existing, block_name, managed_lines, comment_prefix="--"
+        )
 
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp")
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(new_content)
-
-        luac = shutil.which("luac")
-        if luac:
+        def validate(tmp_path: Path) -> None:
             result = subprocess.run([luac, "-p", str(tmp_path)], capture_output=True, text=True, timeout=5)
             if result.returncode != 0:
                 raise LuaWriteError(
                     t("Generated Lua is invalid, changes were not applied:") + f"\n{result.stderr.strip()}"
                 )
 
-        os.replace(tmp_path, path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+        _atomic_replace_locked(path, new_content, original, validate)
+
+
+def write_managed_lua_block_and_reload(path: Path, block_name: str, managed_lines: list[str]) -> None:
+    """Commit a validated block, reload, and roll back plus reload again on failure."""
+    luac = shutil.which("luac")
+    if luac is None:
+        raise LuaWriteError(t("Lua compiler (luac) is required; changes were not applied."))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _with_managed_write_lock(path):
+        existed = path.exists()
+        original = path.read_bytes() if existed else b""
+        new_content = _render_managed_content(
+            original.decode("utf-8"), block_name, managed_lines, comment_prefix="--"
+        )
+
+        def validate(tmp_path: Path) -> None:
+            result = subprocess.run([luac, "-p", str(tmp_path)], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                raise LuaWriteError(
+                    t("Generated Lua is invalid, changes were not applied:") + f"\n{result.stderr.strip()}"
+                )
+
+        _atomic_replace_locked(path, new_content, original, validate)
+        try:
+            reload_hyprland()
+        except RuntimeError as first_error:
+            current = path.read_bytes() if path.exists() else b""
+            if current != new_content.encode("utf-8"):
+                raise ManagedBlockError(
+                    f"Reload failed and configuration changed concurrently; rollback aborted: {first_error}"
+                ) from first_error
+            if existed:
+                fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{path.name}.", suffix=".rollback")
+                rollback_tmp = Path(tmp_name)
+                try:
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(original)
+                    shutil.copystat(path, rollback_tmp)
+                    os.replace(rollback_tmp, path)
+                except BaseException:
+                    rollback_tmp.unlink(missing_ok=True)
+                    raise
+            else:
+                path.unlink()
+            try:
+                reload_hyprland()
+            except RuntimeError as rollback_reload_error:
+                raise RuntimeError(
+                    f"Reload failed; configuration was rolled back, but rollback reload also failed: "
+                    f"{first_error}; {rollback_reload_error}"
+                ) from first_error
+            raise RuntimeError(f"Reload failed; configuration was rolled back and reloaded: {first_error}") from first_error
+
+
+def write_managed_legacy_block(
+    path: Path,
+    block_name: str,
+    managed_lines: list[str],
+    *,
+    legacy_marker: str,
+    legacy_line_predicate: Callable[[str], bool],
+) -> None:
+    """Safely replace a # managed block, migrating one old start-only marker."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _with_managed_write_lock(path):
+        original = path.read_bytes() if path.exists() else b""
+        new_content = _render_managed_content(
+            original.decode("utf-8"),
+            block_name,
+            managed_lines,
+            comment_prefix="#",
+            legacy_marker=legacy_marker,
+            legacy_line_predicate=legacy_line_predicate,
+        )
+        _atomic_replace_locked(path, new_content, original, None)
 
 
 def reload_hyprland() -> None:
@@ -284,10 +477,11 @@ def prompt_provider_choice(parent_window, on_chosen: Callable[[Provider], None])
     dlg.set_modal(True)
     dlg.add_response("no", t("No"))
     dlg.add_response("yes", t("Yes"))
-    dlg.set_default_response("no")
-    dlg.set_close_response("no")
+    dlg.set_close_response("cancel")
 
     def _on_response(_dlg, response_id):
+        if response_id not in {"yes", "no"}:
+            return
         provider = Provider.LUA if response_id == "yes" else Provider.HYPRLANG
         save_provider(provider)
         on_chosen(provider)
