@@ -11,7 +11,9 @@
 
 use std::collections::HashMap;
 
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 
 // ---------------------------------------------------------------------
 // keybinds.rs — variables.conf parsing
@@ -227,6 +229,162 @@ fn percent_to_pwm_raw(percent: u8) -> u8 {
 }
 
 // ---------------------------------------------------------------------
+// lua.rs — Lua config codec (app-controlled subset)
+// ---------------------------------------------------------------------
+
+/// Converts a parsed `caelestia_core::lua::LuaValue` into a native Python
+/// object: `Nil` -> `None`, `Bool` -> `bool`, `Number` -> `int`/`float`
+/// (falling back to `str` if somehow neither parses, which should not
+/// happen for anything this codec itself produced), `Str` -> `str`,
+/// `Table` -> `list` if every entry is positional, otherwise `dict`
+/// (missing keys among mixed entries get a synthetic `_<n>` key rather
+/// than silently dropping the value).
+fn lua_value_to_py(py: Python<'_>, v: &caelestia_core::lua::LuaValue) -> PyResult<Py<PyAny>> {
+    use caelestia_core::lua::LuaValue;
+    Ok(match v {
+        LuaValue::Nil => py.None(),
+        LuaValue::Bool(b) => b.into_pyobject(py)?.to_owned().into_any().unbind(),
+        LuaValue::Number(s) => {
+            if let Ok(i) = s.parse::<i64>() {
+                i.into_pyobject(py)?.into_any().unbind()
+            } else if let Ok(f) = s.parse::<f64>() {
+                f.into_pyobject(py)?.into_any().unbind()
+            } else {
+                s.into_pyobject(py)?.into_any().unbind()
+            }
+        }
+        LuaValue::Str(s) => s.into_pyobject(py)?.into_any().unbind(),
+        LuaValue::Table(entries) => {
+            if entries.iter().all(|(k, _)| k.is_none()) {
+                let list = PyList::empty(py);
+                for (_, val) in entries {
+                    list.append(lua_value_to_py(py, val)?)?;
+                }
+                list.into_any().unbind()
+            } else {
+                let dict = PyDict::new(py);
+                for (i, (k, val)) in entries.iter().enumerate() {
+                    let key = k.clone().unwrap_or_else(|| format!("_{}", i + 1));
+                    dict.set_item(key, lua_value_to_py(py, val)?)?;
+                }
+                dict.into_any().unbind()
+            }
+        }
+    })
+}
+
+/// Converts a native Python object back into a `LuaValue` for rendering.
+/// Only the JSON-like subset this codec understands is accepted: `None`,
+/// `bool`, `int`, `float`, `str`, `list`/`tuple` (-> positional table),
+/// `dict` with string keys (-> keyed table). Anything else raises
+/// `ValueError` rather than guessing.
+fn py_to_lua_value(value: &Bound<'_, PyAny>) -> PyResult<caelestia_core::lua::LuaValue> {
+    use caelestia_core::lua::LuaValue;
+
+    if value.is_none() {
+        return Ok(LuaValue::Nil);
+    }
+    if let Ok(b) = value.cast::<PyBool>() {
+        return Ok(LuaValue::Bool(b.is_true()));
+    }
+    if let Ok(i) = value.cast::<PyInt>() {
+        return Ok(LuaValue::Number(i.to_string()));
+    }
+    if let Ok(f) = value.cast::<PyFloat>() {
+        let n = f.value();
+        let mut s = n.to_string();
+        if !s.contains('.') {
+            s.push_str(".0");
+        }
+        return Ok(LuaValue::Number(s));
+    }
+    if let Ok(s) = value.cast::<PyString>() {
+        return Ok(LuaValue::Str(s.to_string()));
+    }
+    if let Ok(dict) = value.cast::<PyDict>() {
+        let mut entries = Vec::with_capacity(dict.len());
+        for (k, v) in dict.iter() {
+            let key: String = k
+                .extract()
+                .map_err(|_| PyValueError::new_err("Lua table keys must be strings"))?;
+            entries.push((Some(key), py_to_lua_value(&v)?));
+        }
+        return Ok(LuaValue::Table(entries));
+    }
+    if let Ok(list) = value.cast::<PyList>() {
+        let mut entries = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            entries.push((None, py_to_lua_value(&item)?));
+        }
+        return Ok(LuaValue::Table(entries));
+    }
+    if let Ok(tuple) = value.cast::<pyo3::types::PyTuple>() {
+        let mut entries = Vec::with_capacity(tuple.len());
+        for item in tuple.iter() {
+            entries.push((None, py_to_lua_value(&item)?));
+        }
+        return Ok(LuaValue::Table(entries));
+    }
+    Err(PyValueError::new_err(format!(
+        "unsupported Python type for Lua rendering: {}",
+        value.get_type().name()?
+    )))
+}
+
+/// `caelestia_core.parse_lua_table(input: str) -> dict | list`
+///
+/// Parses a single Lua table literal (e.g. the `{ ... }` argument of an
+/// `hl.monitor({ ... })` call) into a native Python structure.
+#[pyfunction]
+fn parse_lua_table(py: Python<'_>, input: &str) -> PyResult<Py<PyAny>> {
+    let value = caelestia_core::lua::parse_value(input)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    lua_value_to_py(py, &value)
+}
+
+/// `caelestia_core.render_lua_table(value: dict | list) -> str`
+///
+/// The inverse of `parse_lua_table`: renders a Python dict/list back into
+/// deterministic, single-line Lua table syntax.
+#[pyfunction]
+fn render_lua_table(value: &Bound<'_, PyAny>) -> PyResult<String> {
+    let lua_value = py_to_lua_value(value)?;
+    Ok(caelestia_core::lua::render_value(&lua_value))
+}
+
+/// `caelestia_core.parse_lua_call(input: str) -> tuple[str, list]`
+///
+/// Parses a call expression like `hl.monitor({ ... })` into its dotted
+/// path (`"hl.monitor"`) and a list of its arguments, each converted the
+/// same way `parse_lua_table` converts a table.
+#[pyfunction]
+fn parse_lua_call(py: Python<'_>, input: &str) -> PyResult<(String, Vec<Py<PyAny>>)> {
+    let call =
+        caelestia_core::lua::parse_call(input).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let args = call
+        .args
+        .iter()
+        .map(|a| lua_value_to_py(py, a))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok((call.path.join("."), args))
+}
+
+/// `caelestia_core.render_lua_call(path: str, args: list) -> str`
+///
+/// The inverse of `parse_lua_call`: `path` is a dot-joined identifier
+/// chain (`"hl.monitor"`), `args` is a list of Python values each
+/// converted the same way `render_lua_table` converts one.
+#[pyfunction]
+fn render_lua_call(path: &str, args: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+    let path_parts: Vec<&str> = path.split('.').collect();
+    let lua_args = args
+        .iter()
+        .map(py_to_lua_value)
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(caelestia_core::lua::render_call(&path_parts, &lua_args))
+}
+
+// ---------------------------------------------------------------------
 // module registration
 // ---------------------------------------------------------------------
 
@@ -260,6 +418,11 @@ fn caelestia_core_pymodule(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(find_conflicts, m)?)?;
     m.add_function(wrap_pyfunction!(pwm_raw_to_percent, m)?)?;
     m.add_function(wrap_pyfunction!(percent_to_pwm_raw, m)?)?;
+
+    m.add_function(wrap_pyfunction!(parse_lua_table, m)?)?;
+    m.add_function(wrap_pyfunction!(render_lua_table, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_lua_call, m)?)?;
+    m.add_function(wrap_pyfunction!(render_lua_call, m)?)?;
 
     Ok(())
 }

@@ -6,5 +6,6 @@
 pub mod config;
 pub mod fans;
 pub mod keybinds;
+pub mod lua;
 pub mod rules;
 pub mod window_rule_conflicts;
