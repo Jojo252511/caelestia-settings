@@ -168,6 +168,21 @@ TRANSLATIONS = {
     ),
     "General / Input": "Allgemein / Eingabe",
     "Monitor configuration": "Monitor-Konfiguration",
+    "The last active monitor cannot be disabled.": (
+        "Der letzte aktive Monitor kann nicht deaktiviert werden."
+    ),
+    "Could not determine active monitors; disabling was blocked.": (
+        "Die aktiven Monitore konnten nicht sicher ermittelt werden; "
+        "die Deaktivierung wurde blockiert."
+    ),
+    "Could not validate the requested monitor configuration; disabling was blocked.": (
+        "Die angeforderte Monitorkonfiguration konnte nicht sicher geprüft werden; "
+        "die Deaktivierung wurde blockiert."
+    ),
+    "The monitor deactivation could not be verified; the change was rolled back.": (
+        "Die Monitordeaktivierung konnte nicht bestätigt werden; "
+        "die Änderung wurde zurückgerollt."
+    ),
     "Workspace configuration": "Workspace-Konfiguration",
     "Wallpaper / autostart": "Hintergrundbild / Autostart",
     "Execs / primary monitor": "Execs / Hauptmonitor",

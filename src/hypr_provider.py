@@ -532,7 +532,13 @@ def find_competing_lua_autostart_entries(
     return matches
 
 
-def write_managed_lua_block(path: Path, block_name: str, managed_lines: list[str]) -> None:
+def write_managed_lua_block(
+    path: Path,
+    block_name: str,
+    managed_lines: list[str],
+    *,
+    pre_write_check: Callable[[str], None] | None = None,
+) -> None:
     """Replaces the named managed block in `path` with `managed_lines`,
     creating the block (and the file) if it doesn't exist yet. Content
     outside the named block — including other named blocks and any
@@ -552,6 +558,8 @@ def write_managed_lua_block(path: Path, block_name: str, managed_lines: list[str
     with _with_managed_write_lock(path):
         original = path.read_bytes() if path.exists() else b""
         existing = original.decode("utf-8")
+        if pre_write_check is not None:
+            pre_write_check(existing)
         new_content = _render_managed_content(
             existing, block_name, managed_lines, comment_prefix="--"
         )
@@ -572,6 +580,7 @@ def write_managed_lua_block_and_reload(
     managed_lines: list[str],
     *,
     pre_write_check: Callable[[str], None] | None = None,
+    verify: Callable[[], None] | None = None,
 ) -> None:
     """Commit a validated block, reload, and roll back plus reload again on failure.
 
@@ -582,6 +591,10 @@ def write_managed_lua_block_and_reload(
     Callers use this for checks that must see the exact bytes the write
     is based on, not a possibly-stale pre-lock read (e.g. detecting a
     competing manually written autostart entry outside this block).
+
+    `verify`, if given, runs after reload while the same lock is still
+    held. Any `Exception` triggers restoration of the original bytes and
+    a second reload, matching `update_managed_lua_block_and_reload`.
     """
     luac = shutil.which("luac")
     if luac is None:
@@ -607,7 +620,9 @@ def write_managed_lua_block_and_reload(
         _atomic_replace_locked(path, new_content, original, validate)
         try:
             reload_hyprland()
-        except RuntimeError as first_error:
+            if verify is not None:
+                verify()
+        except Exception as first_error:
             _rollback_and_reload(
                 path,
                 existed=existed,
@@ -706,6 +721,7 @@ def write_managed_legacy_block_and_reload(
     legacy_marker: str | None = None,
     legacy_predicate: Callable[[str], bool] | None = None,
     pre_write_check: Callable[[str], None] | None = None,
+    verify: Callable[[], None] | None = None,
 ) -> None:
     """Atomically write a legacy block, reload, and roll back on reload failure.
 
@@ -737,6 +753,9 @@ def write_managed_legacy_block_and_reload(
     the in-lock legacy recheck, on the same exact bytes — and may raise
     to abort the write with the file left completely untouched. See
     `write_managed_lua_block_and_reload` for the same parameter.
+
+    `verify` has the same post-reload rollback semantics as the Lua
+    writer and also executes while this lock is held.
     """
 
     def _check_legacy(existing: str) -> None:
@@ -779,7 +798,9 @@ def write_managed_legacy_block_and_reload(
         _atomic_replace_locked(path, new_content, original, None)
         try:
             reload_hyprland()
-        except RuntimeError as first_error:
+            if verify is not None:
+                verify()
+        except Exception as first_error:
             _rollback_and_reload(
                 path,
                 existed=existed,
