@@ -1,7 +1,12 @@
 .venv/
 __pycache__/
+.pytest_cache/
 ./Update.sh
+
+# AI related files
 .claude/
+.codex/
+.agents/
 .claude-flow/
 CLAUDE.md
 .mcp.json
