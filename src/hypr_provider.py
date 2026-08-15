@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import caelestia_core
 import gi
 from enum import Enum
 from pathlib import Path
@@ -69,6 +70,8 @@ _LUA_CAPABILITIES = {
     ConfigCapability.WORKSPACES,
     ConfigCapability.WINDOW_RULES,
     ConfigCapability.INPUT,
+    ConfigCapability.WALLPAPER_AUTOSTART,
+    ConfigCapability.EXECS,
 }
 
 _CAPABILITY_LABELS = {
@@ -383,10 +386,28 @@ def _rollback_and_reload(
     written: bytes,
     first_error: Exception,
 ) -> None:
+    """Restores `original` — the exact bytes THIS write transaction read
+    as its starting point, under the same lock, right before it wrote
+    `written` — and reloads again. Called after `reload_hyprland()`,
+    `verify()`, or `live_apply()` raises (see the `live_apply` parameter
+    on `write_managed_lua_block_and_reload`/
+    `write_managed_legacy_block_and_reload`): from here, all three
+    failure sources are handled identically, so the message below
+    deliberately says "applying the change failed" rather than assuming
+    a reload-specific failure.
+
+    Safety-critical: only ever rolls back when the file ON DISK RIGHT NOW
+    still holds exactly `written` — if some other writer's serialized
+    change landed after this transaction's own write (necessarily via
+    the same lock, so strictly after it), `current != written` and the
+    foreign change is left completely untouched rather than being
+    silently clobbered by a stale rollback.
+    """
     current = path.read_bytes() if path.exists() else b""
     if current != written:
         raise ManagedBlockError(
-            f"Reload failed and configuration changed concurrently; rollback aborted: {first_error}"
+            "Applying the change failed and configuration changed concurrently; "
+            f"rollback aborted: {first_error}"
         ) from first_error
     if existed:
         fd, tmp_name = tempfile.mkstemp(
@@ -407,11 +428,11 @@ def _rollback_and_reload(
         reload_hyprland()
     except RuntimeError as rollback_reload_error:
         raise RuntimeError(
-            "Reload failed; configuration was rolled back, but rollback reload also failed: "
-            f"{first_error}; {rollback_reload_error}"
+            "Applying the change failed; configuration was rolled back, but rollback "
+            f"reload also failed: {first_error}; {rollback_reload_error}"
         ) from first_error
     raise RuntimeError(
-        f"Reload failed; configuration was rolled back and reloaded: {first_error}"
+        f"Applying the change failed; configuration was rolled back and reloaded: {first_error}"
     ) from first_error
 
 
@@ -433,19 +454,128 @@ def managed_block_byte_range(path: Path, block_name: str) -> tuple[int, int] | N
     return len(text[: target[2]].encode()), len(text[: target[3]].encode())
 
 
-def read_managed_lua_block(path: Path, block_name: str) -> list[str]:
-    """Returns the lines currently inside the named managed block in
-    `path`, or `[]` if the file or the block doesn't exist yet."""
+def _read_managed_block(path: Path, block_name: str, comment_prefix: str) -> list[str]:
     if not path.exists():
         return []
     text = path.read_bytes().decode("utf-8")
-    target = _scan_managed_blocks(text, "--").get(block_name)
+    target = _scan_managed_blocks(text, comment_prefix).get(block_name)
     if target is None:
         return []
     return text[target[2] : target[3]].splitlines()
 
 
-def write_managed_lua_block(path: Path, block_name: str, managed_lines: list[str]) -> None:
+def read_managed_lua_block(path: Path, block_name: str) -> list[str]:
+    """Returns the lines currently inside the named managed block in
+    `path`, or `[]` if the file or the block doesn't exist yet."""
+    return _read_managed_block(path, block_name, "--")
+
+
+def read_managed_legacy_block(path: Path, block_name: str) -> list[str]:
+    """Returns the lines currently inside the named managed block in a
+    legacy (`#`-comment) `path`, or `[]` if the file or the block doesn't
+    exist yet. Mirrors `read_managed_lua_block` for the hyprlang provider —
+    used by callers (e.g. reading back the app-owned primary-monitor exec
+    entry) that must not scan the whole file, since a legacy config file
+    like execs.conf can also hold manually written, non-app-owned content
+    outside the named block."""
+    return _read_managed_block(path, block_name, "#")
+
+
+# ── Competing foreign-content detection ──────────────────────────────────
+#
+# A managed block is only ever compared against ITS OWN previous content
+# (byte-for-byte preservation of everything else) — but that alone can't
+# tell a caller whether some OTHER, foreign entry in the same file
+# independently controls the same real-world effect (e.g. a second
+# manually written `exec-once = mpvpaper ...` line, or a second
+# `xrandr --primary` handler). Hyprland runs every `exec-once`/
+# `hl.exec_cmd` autostart entry it finds, not just the last one, so a
+# foreign entry like that isn't overridden by this app's own managed
+# block — it competes with it. These helpers let a caller detect that
+# situation so it can fail closed (writing) or show a neutral/undetermined
+# state (reading) instead of silently claiming its own value is the only
+# one that matters. Neither helper ever mutates anything they scan.
+
+
+def find_lines_outside_managed_blocks(
+    text: str, block_names: list[str], comment_prefix: str
+) -> list[str]:
+    """Returns every non-blank line in `text` that falls outside ALL of
+    the named managed blocks — content this app does not own. For legacy
+    (`#`-comment) files only, where every entry of interest is always a
+    single line; Lua callers should use
+    `find_competing_lua_autostart_entries` instead, since a foreign Lua
+    call can span multiple lines."""
+    blocks = _scan_managed_blocks(text, comment_prefix)
+    own_ranges = [blocks[name][:2] for name in block_names if name in blocks]
+    result = []
+    for start, end, body in _line_spans(text):
+        if not body.strip():
+            continue
+        if any(r_start <= start < r_end for r_start, r_end in own_ranges):
+            continue
+        result.append(body)
+    return result
+
+
+def find_competing_lua_autostart_entries(
+    text: str, own_block_names: list[str], relevant: Callable[[str], bool]
+) -> list[str]:
+    """Scans `text` for `hl.on(...)` registrations that fall OUTSIDE all of
+    `own_block_names`, using `caelestia_core.find_lua_calls` (tolerates
+    arbitrary surrounding Lua, including multi-line calls, and never
+    raises on unparseable content). Every candidate call is structurally
+    classified via `caelestia_core.classify_autostart_handler` — there is
+    deliberately NO literal `"hyprland.start"` substring pre-filter here:
+    a substring check on the call's own text would silently miss a
+    dynamic event expression like `hl.on(EVENT, function() ... end)`,
+    where the string `"hyprland.start"` never appears verbatim in this
+    particular call at all (it lives in some other assignment this codec
+    doesn't and can't evaluate). Classification outcomes:
+
+    - "other_event": the call's event argument is a literal string
+      proven to be something other than "hyprland.start" — can never
+      compete, safely ignored.
+    - "supported": the event is exactly "hyprland.start" and the handler
+      body is the app's own narrow supported shape; the parsed command is
+      then filtered through `relevant` like before.
+    - "unresolved": anything else — a dynamic/indeterminate event
+      expression, OR a "hyprland.start" handler whose body doesn't match
+      the narrow supported shape (extra statements, wrong call, dynamic
+      command argument, ...). This can never be proven safe, so it is
+      ALWAYS treated as a match regardless of `relevant`, exactly like an
+      unparseable candidate always was.
+
+    Returns the raw matched Lua source text of every match; never
+    mutates `text`."""
+    blocks = _scan_managed_blocks(text, "--")
+    own_ranges = [blocks[name][:2] for name in own_block_names if name in blocks]
+    matches = []
+    for start, end, match_text in caelestia_core.find_lua_calls(text, "hl.on"):
+        if any(r_start <= start < r_end for r_start, r_end in own_ranges):
+            continue
+        kind, cmd = caelestia_core.classify_autostart_handler(match_text)
+        if kind == "other_event":
+            continue
+        if kind == "supported":
+            if relevant(cmd):
+                matches.append(match_text)
+            continue
+        # kind == "unresolved": a shape this codec can't verify one way
+        # or the other must never be silently ignored, since it could
+        # still be a competing dynamic override this codec simply can't
+        # evaluate.
+        matches.append(match_text)
+    return matches
+
+
+def write_managed_lua_block(
+    path: Path,
+    block_name: str,
+    managed_lines: list[str],
+    *,
+    pre_write_check: Callable[[str], None] | None = None,
+) -> None:
     """Replaces the named managed block in `path` with `managed_lines`,
     creating the block (and the file) if it doesn't exist yet. Content
     outside the named block — including other named blocks and any
@@ -465,6 +595,8 @@ def write_managed_lua_block(path: Path, block_name: str, managed_lines: list[str
     with _with_managed_write_lock(path):
         original = path.read_bytes() if path.exists() else b""
         existing = original.decode("utf-8")
+        if pre_write_check is not None:
+            pre_write_check(existing)
         new_content = _render_managed_content(
             existing, block_name, managed_lines, comment_prefix="--"
         )
@@ -479,8 +611,45 @@ def write_managed_lua_block(path: Path, block_name: str, managed_lines: list[str
         _atomic_replace_locked(path, new_content, original, validate)
 
 
-def write_managed_lua_block_and_reload(path: Path, block_name: str, managed_lines: list[str]) -> None:
-    """Commit a validated block, reload, and roll back plus reload again on failure."""
+def write_managed_lua_block_and_reload(
+    path: Path,
+    block_name: str,
+    managed_lines: list[str],
+    *,
+    pre_write_check: Callable[[str], None] | None = None,
+    verify: Callable[[], None] | None = None,
+    live_apply: Callable[[], None] | None = None,
+) -> None:
+    """Commit a validated block, reload, and roll back plus reload again on failure.
+
+    `pre_write_check`, if given, is called once inside the write lock with
+    the exact existing file text about to be transformed — right before
+    it is transformed — and may raise to abort the write (no temp file,
+    no backup, no reload) with the file left completely untouched.
+    Callers use this for checks that must see the exact bytes the write
+    is based on, not a possibly-stale pre-lock read (e.g. detecting a
+    competing manually written autostart entry outside this block).
+
+    `verify`, if given, runs after reload while the same lock is still
+    held. Any `Exception` triggers restoration of the original bytes and
+    a second reload, matching `update_managed_lua_block_and_reload`.
+
+    `live_apply`, if given, runs immediately after `verify` (or right
+    after reload if `verify` is absent) — STILL under the same write
+    lock. It is for a live, external side effect that must be attempted
+    only once persistence has genuinely succeeded (e.g. spawning
+    mpvpaper, or calling `xrandr` to change the primary monitor). Any
+    `Exception` it raises gets exactly the same rollback treatment as a
+    `verify` failure: `_rollback_and_reload` restores `original` — the
+    EXACT bytes this specific write transaction read as its starting
+    point under this same lock, never a caller's separately, possibly
+    earlier, pre-lock snapshot — and reloads again. This is what makes
+    the rollback base race-free: if some other writer's serialized change
+    already landed between an outer caller's own pre-lock read and this
+    lock being acquired, `original` here already reflects that change,
+    so a failed `live_apply` correctly rolls back to it, not to a stale
+    value the caller might otherwise have captured earlier.
+    """
     luac = shutil.which("luac")
     if luac is None:
         raise LuaWriteError(t("Lua compiler (luac) is required; changes were not applied."))
@@ -488,8 +657,11 @@ def write_managed_lua_block_and_reload(path: Path, block_name: str, managed_line
     with _with_managed_write_lock(path):
         existed = path.exists()
         original = path.read_bytes() if existed else b""
+        existing_text = original.decode("utf-8")
+        if pre_write_check is not None:
+            pre_write_check(existing_text)
         new_content = _render_managed_content(
-            original.decode("utf-8"), block_name, managed_lines, comment_prefix="--"
+            existing_text, block_name, managed_lines, comment_prefix="--"
         )
 
         def validate(tmp_path: Path) -> None:
@@ -502,7 +674,11 @@ def write_managed_lua_block_and_reload(path: Path, block_name: str, managed_line
         _atomic_replace_locked(path, new_content, original, validate)
         try:
             reload_hyprland()
-        except RuntimeError as first_error:
+            if verify is not None:
+                verify()
+            if live_apply is not None:
+                live_apply()
+        except Exception as first_error:
             _rollback_and_reload(
                 path,
                 existed=existed,
@@ -598,22 +774,83 @@ def write_managed_legacy_block_and_reload(
     block_name: str,
     managed_lines: list[str],
     *,
-    legacy_marker: str,
+    legacy_marker: str | None = None,
+    legacy_predicate: Callable[[str], bool] | None = None,
+    pre_write_check: Callable[[str], None] | None = None,
+    verify: Callable[[], None] | None = None,
+    live_apply: Callable[[], None] | None = None,
 ) -> None:
-    """Atomically write a legacy block, reload, and roll back on reload failure."""
-    if path.exists():
-        existing = path.read_bytes().decode("utf-8")
-        if any(span[2].strip() == legacy_marker for span in _line_spans(existing)):
+    """Atomically write a legacy block, reload, and roll back on reload failure.
+
+    `legacy_marker`, if given, fails closed when an old *start-only*
+    marker comment (a whole line this app used to write on its own,
+    before the BEGIN/END scheme existed) is still present anywhere in the
+    file — the caller must migrate it manually first.
+
+    `legacy_predicate`, if given, fails closed when a line OUTSIDE every
+    already-existing managed block matches the predicate — for content
+    this app itself used to write inline (e.g. a fixed sentinel comment
+    appended to a generated line) with no dedicated block structure at
+    all, so there is no single fixed marker line to match against.
+    Unlike `legacy_marker`, this never looks inside an existing managed
+    block (new content this app itself just wrote there would otherwise
+    always match).
+
+    Both `legacy_marker` and `legacy_predicate` are checked twice: once
+    here, before the lock is even acquired (a cheap early-out for the
+    common case), and again inside the lock against the EXACT bytes about
+    to be transformed. The first check alone would leave a TOCTOU window
+    open — another writer could introduce exactly the content the
+    predicate is guarding against in the gap between this check and lock
+    acquisition — so only the in-lock recheck is actually load-bearing;
+    the pre-lock one is purely a fast path that avoids paying for
+    `mkdir`/lock acquisition on the common "nothing to detect" case.
+
+    `pre_write_check`, if given, is called once inside the lock — after
+    the in-lock legacy recheck, on the same exact bytes — and may raise
+    to abort the write with the file left completely untouched. See
+    `write_managed_lua_block_and_reload` for the same parameter.
+
+    `verify` has the same post-reload rollback semantics as the Lua
+    writer and also executes while this lock is held. `live_apply` has
+    the same "run after verify, under the same lock, roll back to this
+    transaction's own `original` bytes on failure" semantics as in
+    `write_managed_lua_block_and_reload` — see that function's docstring
+    for why this is what makes the rollback base race-free.
+    """
+
+    def _check_legacy(existing: str) -> None:
+        if legacy_marker is not None and any(
+            span[2].strip() == legacy_marker for span in _line_spans(existing)
+        ):
             raise ManagedBlockError(
                 "Legacy start-only marker detected; explicitly migrate the old block "
                 "to trusted BEGIN/END markers before saving. No changes were applied."
             )
+        if legacy_predicate is not None:
+            managed_ranges = list(_scan_managed_blocks(existing, "#").values())
+            for start, end, body in _line_spans(existing):
+                if any(r_start <= start < r_end for r_start, r_end, _, _ in managed_ranges):
+                    continue
+                if legacy_predicate(body.strip()):
+                    raise ManagedBlockError(
+                        "Manually written configuration matches this app's legacy managed "
+                        "content outside a managed block; migrate it manually before saving. "
+                        "No changes were applied."
+                    )
+
+    if path.exists():
+        _check_legacy(path.read_bytes().decode("utf-8"))
     path.parent.mkdir(parents=True, exist_ok=True)
     with _with_managed_write_lock(path):
         existed = path.exists()
         original = path.read_bytes() if existed else b""
+        existing_text = original.decode("utf-8")
+        _check_legacy(existing_text)
+        if pre_write_check is not None:
+            pre_write_check(existing_text)
         new_content = _render_managed_content(
-            original.decode("utf-8"),
+            existing_text,
             block_name,
             managed_lines,
             comment_prefix="#",
@@ -622,7 +859,11 @@ def write_managed_legacy_block_and_reload(
         _atomic_replace_locked(path, new_content, original, None)
         try:
             reload_hyprland()
-        except RuntimeError as first_error:
+            if verify is not None:
+                verify()
+            if live_apply is not None:
+                live_apply()
+        except Exception as first_error:
             _rollback_and_reload(
                 path,
                 existed=existed,

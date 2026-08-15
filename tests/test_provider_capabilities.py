@@ -59,10 +59,9 @@ class ProviderPageAccessTest(unittest.TestCase):
         access = window.provider_page_access(hp.Provider.LUA)
         self.assertEqual(
             {name for name, available in access.items() if available},
-            {"monitor", "workspaces", "window-rules", "general"},
+            {"monitor", "workspaces", "window-rules", "general", "wallpaper"},
         )
         self.assertFalse(access["keybinds"])
-        self.assertFalse(access["wallpaper"])
 
     def test_non_hyprland_pages_are_not_in_lock_matrix(self):
         for name in ("wifi", "audio", "updates", "fans", "about"):
@@ -111,13 +110,14 @@ class DefensiveWriterTest(unittest.TestCase):
     def test_wallpaper_autostart_without_provider_preserves_file(self):
         original = b"exec-once = manual-command\n"
         self.path.write_bytes(original)
-        with mock.patch.object(wallpaper, "_EXECS_CONF", self.path):
-            for provider in (None, hp.Provider.LUA):
-                with self.subTest(provider=provider), mock.patch.object(
-                    hp, "load_provider", return_value=provider
-                ), self.assertRaises(hp.ProviderCapabilityError):
-                    wallpaper._write_mpvpaper_autostart(Path("/tmp/video.mp4"))
-                self.assertEqual(self.path.read_bytes(), original)
+        with (
+            mock.patch.dict(hp.LEGACY_PATHS, {"execs": self.path}),
+            mock.patch.dict(hp.LUA_PATHS, {"execs": self.path}),
+            mock.patch.object(hp, "load_provider", return_value=None),
+            self.assertRaises(hp.ProviderCapabilityError),
+        ):
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/video.mp4"))
+        self.assertEqual(self.path.read_bytes(), original)
 
     def test_legacy_managed_writers_under_lua_preserve_conf_files(self):
         original = b"# manual config\n"
@@ -140,17 +140,17 @@ class DefensiveWriterTest(unittest.TestCase):
                         writer()
                     self.assertEqual(self.path.read_bytes(), original)
 
-    def test_primary_monitor_writer_is_protected_without_provider_and_under_lua(self):
+    def test_primary_monitor_writer_is_protected_without_provider(self):
         original = b"# Monitor Settings\nexec-once = manual\n"
         self.path.write_bytes(original)
-        with mock.patch.object(monitor, "PRIMARY_MONITOR_EXECS_CONF", self.path):
-            for provider in (None, hp.Provider.LUA):
-                with self.subTest(provider=provider), mock.patch.object(
-                    hp, "load_provider", return_value=provider
-                ):
-                    with self.assertRaises(hp.ProviderCapabilityError):
-                        monitor._set_primary_monitor("DP-1")
-                    self.assertEqual(self.path.read_bytes(), original)
+        with (
+            mock.patch.dict(hp.LEGACY_PATHS, {"execs": self.path}),
+            mock.patch.dict(hp.LUA_PATHS, {"execs": self.path}),
+            mock.patch.object(hp, "load_provider", return_value=None),
+            self.assertRaises(hp.ProviderCapabilityError),
+        ):
+            monitor._set_primary_monitor("DP-1")
+        self.assertEqual(self.path.read_bytes(), original)
 
 
 if __name__ == "__main__":

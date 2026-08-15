@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 import tempfile
@@ -16,6 +17,18 @@ gi.require_version("Adw", "1")
 from src import hypr_provider as hp
 from src import window
 from src.pages import general, keybinds, wallpaper
+
+
+def _write_autostart_calling_live_apply(_video_path, *, live_apply=None, **_kwargs):
+    """Test double for `_write_mpvpaper_autostart` used whenever a test
+    needs the page's `live_apply` wiring (Popen/_stop_mpv) exercised
+    without touching a real config file — mirrors what the real writer
+    does: invoke `live_apply` once persistence succeeds. A bare
+    `mock.patch.object(..., "_write_mpvpaper_autostart")` (no side
+    effect) never calls `live_apply` at all, since that invocation now
+    happens INSIDE the real writer, not in the page-level caller."""
+    if live_apply is not None:
+        live_apply()
 
 
 class WallpaperCallbackCapabilityTest(unittest.TestCase):
@@ -40,6 +53,10 @@ class WallpaperCallbackCapabilityTest(unittest.TestCase):
         page._vid_grid = mock.MagicMock()
         page.banner = mock.MagicMock()
         page._run_wallpaper_action = types.MethodType(wallpaper.WallpaperPage._run_wallpaper_action, page)
+        page._apply_wallpaper_change = types.MethodType(
+            wallpaper.WallpaperPage._apply_wallpaper_change, page
+        )
+        page._restore_live_video = types.MethodType(wallpaper.WallpaperPage._restore_live_video, page)
         page._stop_mpv = mock.MagicMock()
         page._show_banner = mock.MagicMock()
         return page
@@ -52,7 +69,8 @@ class WallpaperCallbackCapabilityTest(unittest.TestCase):
         with (
             mock.patch.object(hp, "load_provider", return_value=provider),
             mock.patch.object(wallpaper, "_MPV_PID_FILE", self.pid_file),
-            mock.patch.object(wallpaper, "_EXECS_CONF", self.execs_file),
+            mock.patch.dict(hp.LEGACY_PATHS, {"execs": self.execs_file}),
+            mock.patch.dict(hp.LUA_PATHS, {"execs": self.execs_file}),
             mock.patch.object(wallpaper.subprocess, "Popen") as popen,
             mock.patch.object(wallpaper.subprocess, "run") as run,
             mock.patch.object(wallpaper.os, "kill") as kill,
@@ -72,45 +90,76 @@ class WallpaperCallbackCapabilityTest(unittest.TestCase):
         self.assertEqual(self.pid_file.read_bytes(), self.pid_original)
         self.assertEqual(self.execs_file.read_bytes(), self.execs_original)
 
-    def test_none_and_lua_block_image_video_and_random_before_side_effects(self):
-        for provider in (None, hp.Provider.LUA):
-            for callback_name in ("_on_image_selected", "_on_video_selected", "_on_random"):
-                with self.subTest(provider=provider, callback=callback_name):
-                    self._assert_blocked_callback(provider, callback_name)
+    def test_no_provider_blocks_image_video_and_random_before_side_effects(self):
+        # Lua unlocked WALLPAPER_AUTOSTART in M6 — only "no provider chosen
+        # yet" still blocks these callbacks; see
+        # WallpaperLuaAutostartTest for the now-supported Lua path.
+        for callback_name in ("_on_image_selected", "_on_video_selected", "_on_random"):
+            with self.subTest(callback=callback_name):
+                self._assert_blocked_callback(None, callback_name)
+
+    @contextlib.contextmanager
+    def _provider_ctx(self, provider):
+        """Standard context for tests that exercise a full callback:
+        provider fixed, execs redirected to the (harmless, non-competing)
+        setUp fixture file so the real writer (now genuinely called, not
+        mocked, by `_apply_wallpaper_change` via `_write_mpvpaper_autostart`)
+        never touches a real user config."""
+        with (
+            mock.patch.object(hp, "load_provider", return_value=provider),
+            mock.patch.dict(hp.LEGACY_PATHS, {"execs": self.execs_file}),
+            mock.patch.dict(hp.LUA_PATHS, {"execs": self.execs_file}),
+        ):
+            yield
 
     def test_delayed_execution_rechecks_provider(self):
+        # The capability check now lives in _apply_wallpaper_change (run
+        # persistence-first), not in _run_wallpaper_action itself — verify
+        # it re-checks the provider fresh on every call rather than using
+        # a cached/stale result.
         page = self._page()
-        action = mock.MagicMock()
-        with mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA):
-            wallpaper.WallpaperPage._run_wallpaper_action(page, action)
-        action.assert_not_called()
-        page.main_window.add_toast.assert_called_once()
+        live_apply = mock.MagicMock()
+        with (
+            mock.patch.object(hp, "load_provider", return_value=None),
+            self.assertRaises(hp.ProviderCapabilityError),
+        ):
+            wallpaper.WallpaperPage._apply_wallpaper_change(
+                page, new_autostart_video=None, live_apply=live_apply
+            )
+        page._stop_mpv.assert_not_called()
+        live_apply.assert_not_called()
 
     def test_hyprlang_image_path_keeps_existing_live_behavior(self):
         page = self._page()
         path = Path(self._tmpdir.name) / "wall.png"
+        path.write_bytes(b"fake")
         with (
-            mock.patch.object(hp, "load_provider", return_value=hp.Provider.HYPRLANG),
+            self._provider_ctx(hp.Provider.HYPRLANG),
             mock.patch.object(wallpaper.subprocess, "Popen") as popen,
-            mock.patch.object(wallpaper, "_write_mpvpaper_autostart") as write_autostart,
+            mock.patch.object(
+                wallpaper, "_write_mpvpaper_autostart", side_effect=_write_autostart_calling_live_apply
+            ) as write_autostart,
         ):
             wallpaper.WallpaperPage._on_image_selected(page, path)
 
         page._stop_mpv.assert_called_once()
         popen.assert_called_once_with(["caelestia", "wallpaper", "-f", str(path)])
-        write_autostart.assert_called_once_with(None)
+        write_autostart.assert_called_once_with(None, live_apply=mock.ANY)
         self.assertEqual(page._current, str(path))
         page._img_grid.mark_current.assert_called_once_with(str(path))
 
     def test_hyprlang_video_path_keeps_existing_live_behavior(self):
         page = self._page()
         path = Path(self._tmpdir.name) / "wall.mp4"
+        path.write_bytes(b"fake")
         process = mock.MagicMock(pid=1234)
         with (
-            mock.patch.object(hp, "load_provider", return_value=hp.Provider.HYPRLANG),
+            self._provider_ctx(hp.Provider.HYPRLANG),
             mock.patch.object(wallpaper, "_MPV_PID_FILE", self.pid_file),
             mock.patch.object(wallpaper.subprocess, "Popen", return_value=process) as popen,
-            mock.patch.object(wallpaper, "_write_mpvpaper_autostart") as write_autostart,
+            mock.patch.object(
+                wallpaper, "_write_mpvpaper_autostart", side_effect=_write_autostart_calling_live_apply
+            ) as write_autostart,
         ):
             wallpaper.WallpaperPage._on_video_selected(page, path)
 
@@ -118,7 +167,7 @@ class WallpaperCallbackCapabilityTest(unittest.TestCase):
         popen.assert_called_once_with([
             "mpvpaper", "*", str(path), "-o", "loop --no-audio --panscan=1.0"
         ])
-        write_autostart.assert_called_once_with(path)
+        write_autostart.assert_called_once_with(path, live_apply=mock.ANY)
         self.assertEqual(self.pid_file.read_text(), "1234")
         self.assertEqual(page._current, str(path))
 
@@ -126,16 +175,320 @@ class WallpaperCallbackCapabilityTest(unittest.TestCase):
         page = self._page()
         image_dir = Path(self._tmpdir.name) / "images"
         with (
-            mock.patch.object(hp, "load_provider", return_value=hp.Provider.HYPRLANG),
+            self._provider_ctx(hp.Provider.HYPRLANG),
             mock.patch.object(wallpaper, "_get_image_dir", return_value=image_dir),
             mock.patch.object(wallpaper.subprocess, "Popen") as popen,
-            mock.patch.object(wallpaper, "_write_mpvpaper_autostart") as write_autostart,
+            mock.patch.object(
+                wallpaper, "_write_mpvpaper_autostart", side_effect=_write_autostart_calling_live_apply
+            ) as write_autostart,
         ):
             wallpaper.WallpaperPage._on_random(page, None)
 
         page._stop_mpv.assert_called_once()
         popen.assert_called_once_with(["caelestia", "wallpaper", "-r", str(image_dir)])
-        write_autostart.assert_called_once_with(None)
+        write_autostart.assert_called_once_with(None, live_apply=mock.ANY)
+
+    def test_lua_image_path_is_no_longer_blocked(self):
+        # WALLPAPER_AUTOSTART became Lua-available in M6 — same callback
+        # behavior as hyprlang, just routed through the Lua writer
+        # internally (see WallpaperLuaAutostartTest for that writer).
+        page = self._page()
+        path = Path(self._tmpdir.name) / "wall.png"
+        path.write_bytes(b"fake")
+        with (
+            self._provider_ctx(hp.Provider.LUA),
+            mock.patch.object(wallpaper.subprocess, "Popen") as popen,
+            mock.patch.object(
+                wallpaper, "_write_mpvpaper_autostart", side_effect=_write_autostart_calling_live_apply
+            ) as write_autostart,
+        ):
+            wallpaper.WallpaperPage._on_image_selected(page, path)
+
+        page._stop_mpv.assert_called_once()
+        popen.assert_called_once_with(["caelestia", "wallpaper", "-f", str(path)])
+        write_autostart.assert_called_once_with(None, live_apply=mock.ANY)
+        self.assertEqual(page._current, str(path))
+        page.main_window.add_toast.assert_called_once()
+
+    def test_lua_video_path_is_no_longer_blocked(self):
+        page = self._page()
+        path = Path(self._tmpdir.name) / "wall.mp4"
+        path.write_bytes(b"fake")
+        process = mock.MagicMock(pid=1234)
+        with (
+            self._provider_ctx(hp.Provider.LUA),
+            mock.patch.object(wallpaper, "_MPV_PID_FILE", self.pid_file),
+            mock.patch.object(wallpaper.subprocess, "Popen", return_value=process) as popen,
+            mock.patch.object(
+                wallpaper, "_write_mpvpaper_autostart", side_effect=_write_autostart_calling_live_apply
+            ) as write_autostart,
+        ):
+            wallpaper.WallpaperPage._on_video_selected(page, path)
+
+        page._stop_mpv.assert_called_once()
+        popen.assert_called_once()
+        write_autostart.assert_called_once_with(path, live_apply=mock.ANY)
+        self.assertEqual(self.pid_file.read_text(), "1234")
+        self.assertEqual(page._current, str(path))
+
+    def test_lua_random_path_is_no_longer_blocked(self):
+        page = self._page()
+        image_dir = Path(self._tmpdir.name) / "images"
+        with (
+            self._provider_ctx(hp.Provider.LUA),
+            mock.patch.object(wallpaper, "_get_image_dir", return_value=image_dir),
+            mock.patch.object(wallpaper.subprocess, "Popen") as popen,
+            mock.patch.object(
+                wallpaper, "_write_mpvpaper_autostart", side_effect=_write_autostart_calling_live_apply
+            ) as write_autostart,
+        ):
+            wallpaper.WallpaperPage._on_random(page, None)
+
+        page._stop_mpv.assert_called_once()
+        popen.assert_called_once_with(["caelestia", "wallpaper", "-r", str(image_dir)])
+        write_autostart.assert_called_once_with(None, live_apply=mock.ANY)
+
+    def test_write_failure_under_lua_shows_error_toast_not_success(self):
+        page = self._page()
+        path = Path(self._tmpdir.name) / "wall.mp4"
+        path.write_bytes(b"fake")
+        with (
+            self._provider_ctx(hp.Provider.LUA),
+            mock.patch.object(wallpaper.subprocess, "Popen") as popen,
+            mock.patch.object(
+                wallpaper, "_write_mpvpaper_autostart", side_effect=hp.LuaWriteError("invalid lua")
+            ),
+        ):
+            wallpaper.WallpaperPage._on_video_selected(page, path)
+
+        popen.assert_not_called()
+        page._stop_mpv.assert_not_called()
+        page._show_banner.assert_not_called()
+        page.main_window.add_toast.assert_called_once()
+        toast = page.main_window.add_toast.call_args.args[0]
+        self.assertIn("invalid lua", toast.get_title())
+        self.assertEqual(page._current, "unchanged")
+        page._vid_grid.mark_current.assert_not_called()
+        self.assertIsNone(page._mpv_proc)
+
+    def test_image_write_failure_has_zero_live_side_effects(self):
+        # Persistence fails BEFORE any live action for the image path too
+        # — not just video (see test_write_failure_under_lua_shows_error_toast_not_success).
+        page = self._page()
+        path = Path(self._tmpdir.name) / "wall.png"
+        path.write_bytes(b"fake")
+        with (
+            self._provider_ctx(hp.Provider.LUA),
+            mock.patch.object(wallpaper.subprocess, "Popen") as popen,
+            mock.patch.object(
+                wallpaper, "_write_mpvpaper_autostart", side_effect=hp.LuaWriteError("bad")
+            ),
+        ):
+            wallpaper.WallpaperPage._on_image_selected(page, path)
+
+        popen.assert_not_called()
+        page._stop_mpv.assert_not_called()
+        page.main_window.add_toast.assert_called_once()
+        self.assertEqual(page._current, "unchanged")
+        page._img_grid.mark_current.assert_not_called()
+
+    def test_video_live_apply_failure_rolls_back_config_and_restores_previous_video(self):
+        page = self._page()
+        old_path = Path(self._tmpdir.name) / "old.mp4"
+        old_path.write_bytes(b"fake")
+        page._current = str(old_path)
+        new_path = Path(self._tmpdir.name) / "new.mp4"
+        new_path.write_bytes(b"fake")
+
+        restore_process = mock.MagicMock(pid=999)
+        popen_calls = []
+
+        def popen_side_effect(args, *a, **kw):
+            popen_calls.append(list(args))
+            if len(popen_calls) == 1:
+                raise OSError("mpvpaper crashed")
+            return restore_process
+
+        with (
+            self._provider_ctx(hp.Provider.HYPRLANG),
+            mock.patch.object(hp, "reload_hyprland"),
+            mock.patch.object(wallpaper, "_MPV_PID_FILE", self.pid_file),
+            mock.patch.object(wallpaper.subprocess, "Popen", side_effect=popen_side_effect),
+        ):
+            wallpaper.WallpaperPage._on_video_selected(page, new_path)
+
+        # Real writer ran for real (not mocked): the new entry was
+        # persisted, then rolled back to the previous (empty) content
+        # after the live-apply failure.
+        self.assertEqual(
+            hp.read_managed_legacy_block(self.execs_file, wallpaper.WALLPAPER_AUTOSTART_BLOCK), []
+        )
+        self.assertEqual(len(popen_calls), 2)
+        self.assertIn(str(old_path), popen_calls[1])
+        self.assertEqual(self.pid_file.read_text(), "999")
+        page.main_window.add_toast.assert_called_once()
+        toast_text = page.main_window.add_toast.call_args.args[0].get_title()
+        self.assertIn("mpvpaper crashed", toast_text)
+        self.assertEqual(page._current, str(old_path))
+        page._vid_grid.mark_current.assert_not_called()
+
+    def test_live_apply_failure_when_no_previous_video_does_not_restore_anything(self):
+        page = self._page()
+        page._current = "unchanged"
+        new_path = Path(self._tmpdir.name) / "new.mp4"
+        new_path.write_bytes(b"fake")
+
+        with (
+            self._provider_ctx(hp.Provider.HYPRLANG),
+            mock.patch.object(hp, "reload_hyprland"),
+            mock.patch.object(wallpaper, "_MPV_PID_FILE", self.pid_file),
+            mock.patch.object(wallpaper.subprocess, "Popen", side_effect=OSError("boom")) as popen,
+        ):
+            wallpaper.WallpaperPage._on_video_selected(page, new_path)
+
+        self.assertEqual(popen.call_count, 1)  # no restore attempt — nothing to restore
+        self.assertEqual(
+            hp.read_managed_legacy_block(self.execs_file, wallpaper.WALLPAPER_AUTOSTART_BLOCK), []
+        )
+        self.assertEqual(page._current, "unchanged")
+
+    def test_concurrent_config_change_during_live_apply_failure_prevents_unsafe_rollback(self):
+        # A foreign write landing between this transaction's own commit
+        # and its live-apply failure must abort the rollback (never
+        # silently clobber the foreign change) while still surfacing a
+        # full, non-silent error — never a success toast.
+        page = self._page()
+        page._current = "unchanged"
+        new_path = Path(self._tmpdir.name) / "new.mp4"
+        new_path.write_bytes(b"fake")
+
+        def popen_side_effect(*_a, **_kw):
+            # Simulate another process racing in and modifying the
+            # config file after our own write already committed, but
+            # before this live-apply failure triggers a rollback
+            # attempt.
+            self.execs_file.write_bytes(self.execs_file.read_bytes() + b"# foreign edit\n")
+            raise OSError("popen boom")
+
+        with (
+            self._provider_ctx(hp.Provider.HYPRLANG),
+            mock.patch.object(hp, "reload_hyprland"),
+            mock.patch.object(wallpaper.subprocess, "Popen", side_effect=popen_side_effect),
+        ):
+            wallpaper.WallpaperPage._on_video_selected(page, new_path)
+
+        page.main_window.add_toast.assert_called_once()
+        toast_text = page.main_window.add_toast.call_args.args[0].get_title()
+        self.assertIn("popen boom", toast_text)
+        self.assertIn("concurrently", toast_text)
+        self.assertIn("# foreign edit", self.execs_file.read_text())
+        self.assertEqual(page._current, "unchanged")
+
+
+class MediaPathValidationTest(unittest.TestCase):
+    """`_validate_media_path` must run before ANY side effect — no
+    capability check, writer, lock, backup, process, PID file, or UI
+    state change — for input this app itself would never produce (a bare
+    string, a relative path, a wrong-type/missing file, a leading-dash
+    filename)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+
+    @staticmethod
+    def _page():
+        page = types.SimpleNamespace()
+        page.main_window = mock.MagicMock()
+        page._current = "unchanged"
+        page._mpv_proc = None
+        page._img_grid = mock.MagicMock()
+        page._vid_grid = mock.MagicMock()
+        page._stop_mpv = mock.MagicMock()
+        page._show_banner = mock.MagicMock()
+        return page
+
+    def _assert_zero_side_effects(self, callback_name, callback_arg):
+        page = self._page()
+        with (
+            mock.patch.object(hp, "load_provider") as load_provider,
+            mock.patch.object(
+                wallpaper, "_write_mpvpaper_autostart", side_effect=_write_autostart_calling_live_apply
+            ) as write_autostart,
+            mock.patch.object(wallpaper.subprocess, "Popen") as popen,
+        ):
+            getattr(wallpaper.WallpaperPage, callback_name)(page, callback_arg)
+        load_provider.assert_not_called()
+        write_autostart.assert_not_called()
+        popen.assert_not_called()
+        page._stop_mpv.assert_not_called()
+        page.main_window.add_toast.assert_called_once()
+        self.assertEqual(page._current, "unchanged")
+        self.assertIsNone(page._mpv_proc)
+
+    def test_rejects_bare_string_even_if_it_looks_like_a_path(self):
+        real_file = Path(self._tmpdir.name) / "wall.png"
+        real_file.write_bytes(b"fake")
+        self._assert_zero_side_effects("_on_image_selected", str(real_file))
+
+    def test_rejects_relative_path(self):
+        real_file = Path(self._tmpdir.name) / "wall.png"
+        real_file.write_bytes(b"fake")
+        cwd = os.getcwd()
+        try:
+            os.chdir(self._tmpdir.name)
+            self._assert_zero_side_effects("_on_image_selected", Path("wall.png"))
+        finally:
+            os.chdir(cwd)
+
+    def test_rejects_nonexistent_file(self):
+        self._assert_zero_side_effects(
+            "_on_image_selected", Path(self._tmpdir.name) / "missing.png"
+        )
+
+    def test_rejects_directory(self):
+        directory = Path(self._tmpdir.name) / "adir.png"
+        directory.mkdir()
+        self._assert_zero_side_effects("_on_image_selected", directory)
+
+    def test_rejects_wrong_media_type_for_image_callback(self):
+        # A .txt file masquerading as an image via a renamed extension
+        # check would still be rejected — this is a real file, wrong type.
+        wrong = Path(self._tmpdir.name) / "notes.txt"
+        wrong.write_bytes(b"fake")
+        self._assert_zero_side_effects("_on_image_selected", wrong)
+
+    def test_rejects_wrong_media_type_for_video_callback(self):
+        wrong = Path(self._tmpdir.name) / "wall.png"
+        wrong.write_bytes(b"fake")
+        self._assert_zero_side_effects("_on_video_selected", wrong)
+
+    def test_rejects_leading_dash_filename(self):
+        # A leading '-' filename must never be interpretable as an option
+        # by a program this app invokes with no shell involved.
+        dashed = Path(self._tmpdir.name) / "-rf.png"
+        dashed.write_bytes(b"fake")
+        self._assert_zero_side_effects("_on_image_selected", dashed)
+
+    def test_accepts_genuine_absolute_existing_matching_file(self):
+        path = Path(self._tmpdir.name) / "wall.png"
+        path.write_bytes(b"fake")
+        validated = wallpaper._validate_media_path(path, wallpaper.IMAGE_EXTENSIONS, "image")
+        self.assertEqual(validated, path)
+
+    def test_validator_rejects_all_dangerous_forms_directly(self):
+        real_dir = Path(self._tmpdir.name)
+        cases = [
+            ("not a Path", "bare string"),
+            (Path("relative.png"), "relative"),
+            (real_dir / "-dash.png", "leading dash"),
+            (real_dir / "missing.png", "missing"),
+        ]
+        (real_dir / "-dash.png").touch()
+        for value, label in cases:
+            with self.subTest(label=label):
+                with self.assertRaises(ValueError):
+                    wallpaper._validate_media_path(value, wallpaper.IMAGE_EXTENSIONS, "image")
 
 
 class ProviderDependentReadTest(unittest.TestCase):

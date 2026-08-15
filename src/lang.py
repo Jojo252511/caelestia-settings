@@ -168,11 +168,41 @@ TRANSLATIONS = {
     ),
     "General / Input": "Allgemein / Eingabe",
     "Monitor configuration": "Monitor-Konfiguration",
+    "The last active monitor cannot be disabled.": (
+        "Der letzte aktive Monitor kann nicht deaktiviert werden."
+    ),
+    "Could not determine active monitors; disabling was blocked.": (
+        "Die aktiven Monitore konnten nicht sicher ermittelt werden; "
+        "die Deaktivierung wurde blockiert."
+    ),
+    "Could not validate the requested monitor configuration; disabling was blocked.": (
+        "Die angeforderte Monitorkonfiguration konnte nicht sicher geprüft werden; "
+        "die Deaktivierung wurde blockiert."
+    ),
+    "The monitor deactivation could not be verified; the change was rolled back.": (
+        "Die Monitordeaktivierung konnte nicht bestätigt werden; "
+        "die Änderung wurde zurückgerollt."
+    ),
     "Workspace configuration": "Workspace-Konfiguration",
     "Wallpaper / autostart": "Hintergrundbild / Autostart",
     "Execs / primary monitor": "Execs / Hauptmonitor",
-    "Primary monitor selection is not yet available for Lua configuration.": (
-        "Die Hauptmonitor-Auswahl ist für Lua-Konfiguration noch nicht verfügbar."
+    "Another manually written primary-monitor exec entry exists outside the "
+    "app-managed block; resolve the conflict manually before saving.": (
+        "Außerhalb des app-eigenen Blocks existiert bereits ein manuell geschriebener "
+        "Hauptmonitor-Exec-Eintrag; lösen Sie den Konflikt manuell auf, bevor Sie speichern."
+    ),
+    "Another manually written video-wallpaper autostart entry exists outside "
+    "the app-managed block; resolve the conflict manually before saving.": (
+        "Außerhalb des app-eigenen Blocks existiert bereits ein manuell geschriebener "
+        "Video-Hintergrundbild-Autostart-Eintrag; lösen Sie den Konflikt manuell auf, "
+        "bevor Sie speichern."
+    ),
+    "xrandr was not found; the primary monitor change was not applied live.": (
+        "xrandr wurde nicht gefunden; die Hauptmonitor-Änderung wurde nicht live angewendet."
+    ),
+    "Overridden by another manual autostart entry — effective state undetermined": (
+        "Durch einen anderen manuellen Autostart-Eintrag überschrieben — "
+        "effektiver Zustand unbestimmt"
     ),
     "Lua compiler (luac) is required; changes were not applied.": (
         "Der Lua-Compiler (luac) ist erforderlich; Änderungen wurden nicht übernommen."

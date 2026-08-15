@@ -402,6 +402,79 @@ fn find_lua_calls(input: &str, func_name: &str) -> Vec<(usize, usize, String)> {
         .collect()
 }
 
+/// `caelestia_core.render_autostart_cmd(cmd: str) -> str`
+///
+/// Renders the app's `hyprland.start` autostart idiom for a single shell
+/// command — see `caelestia_core::lua::render_autostart_cmd`. `cmd` must
+/// already be shell-quoted by the caller; this only handles Lua-level
+/// string escaping. Raises `ValueError` for an empty/whitespace-only
+/// `cmd`.
+#[pyfunction]
+fn render_autostart_cmd(cmd: &str) -> PyResult<String> {
+    caelestia_core::lua::render_autostart_cmd(cmd).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// `caelestia_core.parse_autostart_cmd(input: str) -> str`
+///
+/// The inverse of `render_autostart_cmd`: strictly parses `input` as the
+/// exact `hl.on("hyprland.start", function() hl.exec_cmd("<cmd>") end)`
+/// shape and returns `<cmd>`. Unlike the old lenient behavior, this
+/// rejects a different event, extra/altered statements in the handler
+/// body, trailing content, or any other deviation from that exact shape
+/// — see `caelestia_core::lua::parse_autostart_cmd`. Raises `ValueError`.
+#[pyfunction]
+fn parse_autostart_cmd(input: &str) -> PyResult<String> {
+    caelestia_core::lua::parse_autostart_cmd(input)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// `caelestia_core.classify_autostart_handler(input: str) -> tuple[str, str | None]`
+///
+/// Structurally classifies a single `hl.on(...)` call this app did not
+/// itself write, for competing-handler detection — see
+/// `caelestia_core::lua::classify_autostart_handler` and
+/// `AutostartHandlerClassification`. Returns a `(kind, command)` pair:
+/// `kind` is one of `"other_event"`, `"supported"`, or `"unresolved"`;
+/// `command` is the parsed shell command when `kind == "supported"`, and
+/// `None` otherwise. Never raises — an unparseable/malformed call is
+/// itself reported as `("unresolved", None)`, matching the Rust side's
+/// "always resolve to a classification" contract, since callers must fail
+/// closed on exactly this input rather than have it silently vanish as an
+/// exception.
+#[pyfunction]
+fn classify_autostart_handler(input: &str) -> (String, Option<String>) {
+    use caelestia_core::lua::AutostartHandlerClassification as C;
+    match caelestia_core::lua::classify_autostart_handler(input) {
+        C::OtherStaticEvent => ("other_event".to_string(), None),
+        C::SupportedAutostart(cmd) => ("supported".to_string(), Some(cmd)),
+        C::Unresolved => ("unresolved".to_string(), None),
+    }
+}
+
+/// `caelestia_core.render_xrandr_primary_cmd(name: str) -> str`
+///
+/// Renders the app's own primary-monitor xrandr command for `name` —
+/// see `caelestia_core::lua::render_xrandr_primary_cmd`. Raises
+/// `ValueError` for an empty/whitespace-only `name`.
+#[pyfunction]
+fn render_xrandr_primary_cmd(name: &str) -> PyResult<String> {
+    caelestia_core::lua::render_xrandr_primary_cmd(name)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// `caelestia_core.parse_xrandr_primary_cmd(cmd: str) -> str`
+///
+/// Strictly validates that `cmd` is exactly `xrandr --output <name>
+/// --primary` and returns `<name>` — see
+/// `caelestia_core::lua::parse_xrandr_primary_cmd`. Raises `ValueError`
+/// for anything else (wrong program, missing/extra/reordered options,
+/// multiple commands, empty name, unparseable quoting).
+#[pyfunction]
+fn parse_xrandr_primary_cmd(cmd: &str) -> PyResult<String> {
+    caelestia_core::lua::parse_xrandr_primary_cmd(cmd)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 // ---------------------------------------------------------------------
 // module registration
 // ---------------------------------------------------------------------
@@ -442,6 +515,11 @@ fn caelestia_core_pymodule(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_lua_call, m)?)?;
     m.add_function(wrap_pyfunction!(render_lua_call, m)?)?;
     m.add_function(wrap_pyfunction!(find_lua_calls, m)?)?;
+    m.add_function(wrap_pyfunction!(render_autostart_cmd, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_autostart_cmd, m)?)?;
+    m.add_function(wrap_pyfunction!(classify_autostart_handler, m)?)?;
+    m.add_function(wrap_pyfunction!(render_xrandr_primary_cmd, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_xrandr_primary_cmd, m)?)?;
 
     Ok(())
 }
@@ -511,12 +589,82 @@ hl.monitor({ output = "DP-1" })"#;
                 "parse_lua_call",
                 "render_lua_call",
                 "find_lua_calls",
+                "render_autostart_cmd",
+                "parse_autostart_cmd",
+                "classify_autostart_handler",
+                "render_xrandr_primary_cmd",
+                "parse_xrandr_primary_cmd",
             ] {
                 assert!(
                     module.getattr(name).is_ok(),
                     "missing Python wrapper {name}"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn autostart_cmd_wrapper_roundtrips() {
+        let rendered = render_autostart_cmd("mpvpaper '*' /tmp/a.mp4").unwrap();
+        assert_eq!(
+            parse_autostart_cmd(&rendered).unwrap(),
+            "mpvpaper '*' /tmp/a.mp4"
+        );
+    }
+
+    #[test]
+    fn autostart_cmd_wrapper_maps_parse_failure_to_value_error() {
+        let error = parse_autostart_cmd("local x = 1").unwrap_err();
+        with_python(|py| {
+            assert!(error.is_instance_of::<PyValueError>(py));
+        });
+    }
+
+    #[test]
+    fn autostart_cmd_wrapper_maps_render_failure_to_value_error() {
+        let error = render_autostart_cmd("   ").unwrap_err();
+        with_python(|py| {
+            assert!(error.is_instance_of::<PyValueError>(py));
+        });
+    }
+
+    #[test]
+    fn classify_autostart_handler_wrapper_returns_expected_kinds() {
+        assert_eq!(
+            classify_autostart_handler(
+                r#"hl.on("hyprland.start", function() hl.exec_cmd("waybar") end)"#
+            ),
+            ("supported".to_string(), Some("waybar".to_string()))
+        );
+        assert_eq!(
+            classify_autostart_handler(
+                r#"hl.on("window.open", function() hl.exec_cmd("waybar") end)"#
+            ),
+            ("other_event".to_string(), None)
+        );
+        assert_eq!(
+            classify_autostart_handler(r#"hl.on(EVENT, function() hl.exec_cmd("x") end)"#),
+            ("unresolved".to_string(), None)
+        );
+        assert_eq!(
+            classify_autostart_handler("not a call"),
+            ("unresolved".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn xrandr_primary_cmd_wrapper_roundtrips() {
+        let rendered = render_xrandr_primary_cmd("DP-1").unwrap();
+        assert_eq!(parse_xrandr_primary_cmd(&rendered).unwrap(), "DP-1");
+    }
+
+    #[test]
+    fn xrandr_primary_cmd_wrapper_maps_failures_to_value_error() {
+        with_python(|py| {
+            let render_error = render_xrandr_primary_cmd("").unwrap_err();
+            assert!(render_error.is_instance_of::<PyValueError>(py));
+            let parse_error = parse_xrandr_primary_cmd("xrandr --output DP-1").unwrap_err();
+            assert!(parse_error.is_instance_of::<PyValueError>(py));
         });
     }
 }
