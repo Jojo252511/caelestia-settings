@@ -11,8 +11,6 @@ from src.hypr_provider import (
     Provider,
     find_competing_lua_autostart_entries,
     find_lines_outside_managed_blocks,
-    read_managed_legacy_block,
-    read_managed_lua_block,
     resolve_path,
     require_config_capability,
     write_managed_legacy_block_and_reload,
@@ -114,38 +112,21 @@ def _raise_if_competing_wallpaper_autostart(text: str, provider: Provider) -> No
         )
 
 
-def _read_wallpaper_autostart_lines(provider: Provider) -> list[str]:
-    """Snapshots the app's own currently persisted autostart lines —
-    used to restore them verbatim if a live-apply step fails after a new
-    value was already successfully persisted."""
-    path = resolve_path("execs", provider)
-    if provider is Provider.LUA:
-        return read_managed_lua_block(path, WALLPAPER_AUTOSTART_BLOCK)
-    return read_managed_legacy_block(path, WALLPAPER_AUTOSTART_BLOCK)
-
-
-def _restore_wallpaper_autostart_lines(provider: Provider, lines: list[str]) -> None:
-    """Writes `lines` back verbatim, bypassing `_write_mpvpaper_autostart`
-    (and its competing-content guard, which must never block a rollback)
-    — used only to restore a previous snapshot after a live-apply
-    failure. Still goes through the hardened writer, so a foreign change
-    made in the meantime still safely aborts this restore rather than
-    being clobbered."""
-    path = resolve_path("execs", provider)
-    if provider is Provider.LUA:
-        write_managed_lua_block_and_reload(path, WALLPAPER_AUTOSTART_BLOCK, lines)
-    else:
-        write_managed_legacy_block_and_reload(path, WALLPAPER_AUTOSTART_BLOCK, lines)
-
-
-def _write_mpvpaper_autostart(video_path: Path | None):
+def _write_mpvpaper_autostart(video_path: Path | None, *, live_apply=None):
     """Persists (or clears, when `video_path` is None) the app-owned
     video-wallpaper autostart entry under the currently active provider.
     Only ever touches the "wallpaper-autostart" managed block — manually
     written execs content, and the app's own separate "primary-monitor"
     block, are always left untouched. Fails closed (no write at all) if
     another manually written entry outside the app-managed block also
-    plausibly controls video-wallpaper autostart."""
+    plausibly controls video-wallpaper autostart.
+
+    `live_apply`, if given, is forwarded to the underlying writer and
+    runs INSIDE its write lock, right after a successful reload — see
+    `write_managed_lua_block_and_reload`/`write_managed_legacy_block_and_reload`
+    for why this is what makes a live-apply-failure rollback use the
+    correct (race-free) base content instead of a possibly-stale snapshot
+    taken before the lock was even acquired."""
     provider = require_config_capability(ConfigCapability.WALLPAPER_AUTOSTART)
     path = resolve_path("execs", provider)
 
@@ -159,7 +140,11 @@ def _write_mpvpaper_autostart(video_path: Path | None):
             else []
         )
         write_managed_lua_block_and_reload(
-            path, WALLPAPER_AUTOSTART_BLOCK, lines, pre_write_check=pre_write_check
+            path,
+            WALLPAPER_AUTOSTART_BLOCK,
+            lines,
+            pre_write_check=pre_write_check,
+            live_apply=live_apply,
         )
         return
 
@@ -174,6 +159,7 @@ def _write_mpvpaper_autostart(video_path: Path | None):
         lines,
         legacy_predicate=lambda line: _MPVPAPER_MARKER in line,
         pre_write_check=pre_write_check,
+        live_apply=live_apply,
     )
 
 
@@ -616,41 +602,46 @@ class WallpaperPage(Gtk.Box):
     # ── Auswahl ───────────────────────────────────────────────────────────
 
     def _run_wallpaper_action(self, action, *, missing_program_message: str | None = None):
-        """Run a live wallpaper action only while its capability is available."""
+        """Run a live wallpaper action only while its capability is available.
+
+        A missing program (e.g. mpvpaper) is detected either as a direct
+        `FileNotFoundError` (persistence never ran at all — capability/
+        competing-content/validation failed before any live action) or,
+        since `live_apply` now runs inside the writer's own transaction
+        and any exception it raises gets wrapped by the writer's rollback
+        path, as some other exception whose `__cause__` is the original
+        `FileNotFoundError` — either way the same friendly message is
+        shown instead of the raw wrapped error text."""
         try:
             action()
         except FileNotFoundError:
             message = missing_program_message or t("Required wallpaper program not found.")
             self.main_window.add_toast(Adw.Toast.new(message))
         except Exception as e:
-            self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
+            if isinstance(e.__cause__, FileNotFoundError) and missing_program_message is not None:
+                self.main_window.add_toast(Adw.Toast.new(missing_program_message))
+            else:
+                self.main_window.add_toast(Adw.Toast.new(f"Fehler: {e}"))
 
     def _apply_wallpaper_change(self, *, new_autostart_video: Path | None, live_apply):
         """Persists `new_autostart_video` as the app's autostart entry
         FIRST — before any live process is stopped/started or any PID
         file touched — so a persistence failure (capability, competing
         content, luac, reload, ...) never has any live side effect at
-        all. Only once persistence succeeds does `live_apply()` run. If
-        `live_apply` raises, the just-written config is rolled back to
-        its previous content (and reloaded again), a best-effort attempt
-        is made to restore the previous live video (if any), and the
-        original error is re-raised — the caller must never reach its own
-        success path (UI state update, success toast) after this returns
-        by raising."""
-        provider = require_config_capability(ConfigCapability.WALLPAPER_AUTOSTART)
-        previous_lines = _read_wallpaper_autostart_lines(provider)
+        all. `live_apply` itself only ever runs INSIDE the writer's own
+        write lock, immediately after a successful reload (see
+        `_write_mpvpaper_autostart`'s `live_apply` forwarding) — so if it
+        raises, the writer's own rollback restores exactly the bytes THIS
+        transaction read as its starting point under that same lock
+        (never a stale pre-lock snapshot this method might otherwise have
+        taken), and re-raises. This method only adds a best-effort
+        attempt to restore the previous live video process (if any) on
+        top of that — the caller must never reach its own success path
+        (UI state update, success toast) after this returns by raising."""
         previous_current = self._current
-        _write_mpvpaper_autostart(new_autostart_video)
         try:
-            live_apply()
-        except Exception as live_error:
-            try:
-                _restore_wallpaper_autostart_lines(provider, previous_lines)
-            except Exception as rollback_error:
-                raise RuntimeError(
-                    f"{live_error}; additionally, restoring the previous configuration "
-                    f"failed: {rollback_error}"
-                ) from live_error
+            _write_mpvpaper_autostart(new_autostart_video, live_apply=live_apply)
+        except Exception:
             self._restore_live_video(previous_current)
             raise
 

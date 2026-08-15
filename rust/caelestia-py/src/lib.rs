@@ -428,6 +428,29 @@ fn parse_autostart_cmd(input: &str) -> PyResult<String> {
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// `caelestia_core.classify_autostart_handler(input: str) -> tuple[str, str | None]`
+///
+/// Structurally classifies a single `hl.on(...)` call this app did not
+/// itself write, for competing-handler detection — see
+/// `caelestia_core::lua::classify_autostart_handler` and
+/// `AutostartHandlerClassification`. Returns a `(kind, command)` pair:
+/// `kind` is one of `"other_event"`, `"supported"`, or `"unresolved"`;
+/// `command` is the parsed shell command when `kind == "supported"`, and
+/// `None` otherwise. Never raises — an unparseable/malformed call is
+/// itself reported as `("unresolved", None)`, matching the Rust side's
+/// "always resolve to a classification" contract, since callers must fail
+/// closed on exactly this input rather than have it silently vanish as an
+/// exception.
+#[pyfunction]
+fn classify_autostart_handler(input: &str) -> (String, Option<String>) {
+    use caelestia_core::lua::AutostartHandlerClassification as C;
+    match caelestia_core::lua::classify_autostart_handler(input) {
+        C::OtherStaticEvent => ("other_event".to_string(), None),
+        C::SupportedAutostart(cmd) => ("supported".to_string(), Some(cmd)),
+        C::Unresolved => ("unresolved".to_string(), None),
+    }
+}
+
 /// `caelestia_core.render_xrandr_primary_cmd(name: str) -> str`
 ///
 /// Renders the app's own primary-monitor xrandr command for `name` —
@@ -494,6 +517,7 @@ fn caelestia_core_pymodule(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(find_lua_calls, m)?)?;
     m.add_function(wrap_pyfunction!(render_autostart_cmd, m)?)?;
     m.add_function(wrap_pyfunction!(parse_autostart_cmd, m)?)?;
+    m.add_function(wrap_pyfunction!(classify_autostart_handler, m)?)?;
     m.add_function(wrap_pyfunction!(render_xrandr_primary_cmd, m)?)?;
     m.add_function(wrap_pyfunction!(parse_xrandr_primary_cmd, m)?)?;
 
@@ -567,6 +591,7 @@ hl.monitor({ output = "DP-1" })"#;
                 "find_lua_calls",
                 "render_autostart_cmd",
                 "parse_autostart_cmd",
+                "classify_autostart_handler",
                 "render_xrandr_primary_cmd",
                 "parse_xrandr_primary_cmd",
             ] {
@@ -601,6 +626,30 @@ hl.monitor({ output = "DP-1" })"#;
         with_python(|py| {
             assert!(error.is_instance_of::<PyValueError>(py));
         });
+    }
+
+    #[test]
+    fn classify_autostart_handler_wrapper_returns_expected_kinds() {
+        assert_eq!(
+            classify_autostart_handler(
+                r#"hl.on("hyprland.start", function() hl.exec_cmd("waybar") end)"#
+            ),
+            ("supported".to_string(), Some("waybar".to_string()))
+        );
+        assert_eq!(
+            classify_autostart_handler(
+                r#"hl.on("window.open", function() hl.exec_cmd("waybar") end)"#
+            ),
+            ("other_event".to_string(), None)
+        );
+        assert_eq!(
+            classify_autostart_handler(r#"hl.on(EVENT, function() hl.exec_cmd("x") end)"#),
+            ("unresolved".to_string(), None)
+        );
+        assert_eq!(
+            classify_autostart_handler("not a call"),
+            ("unresolved".to_string(), None)
+        );
     }
 
     #[test]

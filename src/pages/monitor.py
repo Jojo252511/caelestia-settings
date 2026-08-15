@@ -8,7 +8,6 @@ from gi.repository import Gtk, Adw, GLib
 from src.hypr_provider import (
     ConfigCapability,
     Provider,
-    LuaWriteError,
     ManagedBlockError,
     find_competing_lua_autostart_entries,
     find_lines_outside_managed_blocks,
@@ -170,15 +169,18 @@ def _verify_monitor_disable_applied(
 
 def _get_live_monitors() -> list[dict]:
     """Liefert die aktuellen Monitor-Daten von hyprctl, angereichert mit
-    Extras aus monitors.conf (bitdepth)."""
+    Extras aus monitors.conf (bitdepth).
+
+    Raises `MonitorDisableSafetyError` when the live state cannot be
+    determined (deliberately NOT swallowed to an empty list here) — a
+    genuinely empty result and an unreadable one are not the same thing,
+    and `MonitorPage.load_monitors()` (the only real caller) must be able
+    to tell them apart to show a neutral/unknown UI state instead of a
+    confidently empty one."""
     provider = load_provider()
     if provider is None:
         return []
-    try:
-        monitors = _query_hyprctl_monitors_all()
-    except MonitorDisableSafetyError as error:
-        print(f"hyprctl fehler: {error}")
-        return []
+    monitors = _query_hyprctl_monitors_all()
 
     # Extras (bitdepth) aus der providereigenen Datei lesen — hyprctl liefert
     # den aktuellen Live-Zustand unabhängig vom Provider, aber bitdepth ist
@@ -445,25 +447,21 @@ def _raise_if_competing_primary_monitor(text: str, provider: Provider) -> None:
         )
 
 
-def _read_primary_monitor_lines(provider: Provider) -> list[str]:
-    """Snapshots the app's own currently persisted primary-monitor lines
-    — used to restore them verbatim if the live-apply step fails after a
-    new value was already successfully persisted."""
-    path = resolve_path("execs", provider)
-    if provider is Provider.LUA:
-        return read_managed_lua_block(path, PRIMARY_MONITOR_BLOCK)
-    return read_managed_legacy_block(path, PRIMARY_MONITOR_BLOCK)
-
-
-def _write_primary_monitor_lines(provider: Provider, lines: list[str], *, pre_write_check=None) -> None:
+def _write_primary_monitor_lines(
+    provider: Provider,
+    lines: list[str],
+    *,
+    pre_write_check=None,
+    live_apply=None,
+) -> None:
     path = resolve_path("execs", provider)
     if provider is Provider.LUA:
         write_managed_lua_block_and_reload(
-            path, PRIMARY_MONITOR_BLOCK, lines, pre_write_check=pre_write_check
+            path, PRIMARY_MONITOR_BLOCK, lines, pre_write_check=pre_write_check, live_apply=live_apply
         )
     else:
         write_managed_legacy_block_and_reload(
-            path, PRIMARY_MONITOR_BLOCK, lines, pre_write_check=pre_write_check
+            path, PRIMARY_MONITOR_BLOCK, lines, pre_write_check=pre_write_check, live_apply=live_apply
         )
 
 
@@ -506,16 +504,19 @@ def _apply_primary_monitor_live(name: str | None) -> None:
 def _set_primary_monitor(name: str | None):
     """Persists (or clears, when `name` is None) the app-owned primary
     monitor exec entry for the currently active provider under the
-    "primary-monitor" managed block, THEN applies it live via `xrandr`.
-    If the live-apply then fails, the just-persisted config is rolled
-    back to its previous content (and reloaded again, bypassing the
-    competing-content guard, which must never block a rollback) and the
-    live-apply error is re-raised — the caller must never treat this as
-    a success. Fails closed (no write, no live action) if another
-    manually written entry outside the app-managed block also plausibly
-    controls the primary monitor."""
+    "primary-monitor" managed block, THEN applies it live via `xrandr` —
+    with the live-apply call running INSIDE the writer's own lock/
+    transaction (see `live_apply` on `write_managed_lua_block_and_reload`/
+    `write_managed_legacy_block_and_reload`), not as a separate step
+    afterwards. This is what makes the rollback base correct even under
+    concurrency: if the live-apply fails, the writer rolls back to
+    exactly the bytes THIS transaction read as its starting point under
+    the same lock — never a snapshot taken before the lock was acquired,
+    which could already be stale if another writer's change was
+    serialized in between. Fails closed (no write, no live action) if
+    another manually written entry outside the app-managed block also
+    plausibly controls the primary monitor."""
     provider = require_config_capability(ConfigCapability.EXECS)
-    previous_lines = _read_primary_monitor_lines(provider)
 
     if name:
         cmd = caelestia_core.render_xrandr_primary_cmd(name)
@@ -530,19 +531,12 @@ def _set_primary_monitor(name: str | None):
     def pre_write_check(text: str) -> None:
         _raise_if_competing_primary_monitor(text, provider)
 
-    _write_primary_monitor_lines(provider, lines, pre_write_check=pre_write_check)
-
-    try:
+    def live_apply() -> None:
         _apply_primary_monitor_live(name)
-    except Exception as live_error:
-        try:
-            _write_primary_monitor_lines(provider, previous_lines)
-        except Exception as rollback_error:
-            raise RuntimeError(
-                f"{live_error}; additionally, restoring the previous primary monitor "
-                f"configuration failed: {rollback_error}"
-            ) from live_error
-        raise
+
+    _write_primary_monitor_lines(
+        provider, lines, pre_write_check=pre_write_check, live_apply=live_apply
+    )
 
 
 # ── shell.json Helpers ───────────────────────────────────────────────────────
@@ -1185,19 +1179,31 @@ class MonitorPage(Gtk.Box):
         self.load_monitors()
 
     def load_monitors(self):
-        provider_missing = load_provider() is None
-        self._apply_btn.set_sensitive(not provider_missing)
-        self._canvas.set_sensitive(not provider_missing)
-        self._settings_panel.set_sensitive(not provider_missing)
-        if provider_missing:
-            self._monitors = []
-            self._canvas.monitors = []
-            self._canvas.selected = None
-            self._canvas.queue_draw()
-            self._settings_panel.load(None)
+        """Reloads the model and every widget from confirmed live state.
+
+        This is the single source of truth for a "safe" UI state and is
+        deliberately reused for three cases: the page's own initial load,
+        the user-triggered Reload button, and — critically — recovery
+        after a failed Apply (see `_on_apply`), where it is what turns a
+        stale, never-actually-applied in-memory model/widget state back
+        into one that matches reality. If the live state itself cannot
+        be determined (e.g. `hyprctl` unreachable), this shows a neutral,
+        fully disabled state instead of guessing — never a confidently
+        empty or stale one."""
+        if load_provider() is None:
+            self._set_neutral_monitor_state()
             return
 
-        raw = _get_live_monitors()
+        try:
+            raw = _get_live_monitors()
+        except MonitorDisableSafetyError as error:
+            self._set_neutral_monitor_state(error_message=str(error))
+            return
+
+        self._apply_btn.set_sensitive(True)
+        self._canvas.set_sensitive(True)
+        self._settings_panel.set_sensitive(True)
+
         self._monitors = [MonitorModel(m) for m in raw]
 
         # Hauptmonitor aus execs.conf/execs.lua markieren — bei einem
@@ -1216,6 +1222,25 @@ class MonitorPage(Gtk.Box):
         self._canvas.selected = None
         self._canvas.queue_draw()
         self._settings_panel.load(None)
+
+    def _set_neutral_monitor_state(self, *, error_message: str | None = None) -> None:
+        """Shows the same disabled/empty placeholder state used when no
+        provider is chosen yet, optionally with a visible error hint —
+        used both for "no provider" and for "live state unreadable"
+        (never a guessed value in either case). Widget updates here never
+        trigger `MonitorSettingsPanel`'s own change handlers: `.load(None)`
+        only shows the placeholder StatusPage, it never touches any of
+        the input widgets those handlers are attached to."""
+        self._apply_btn.set_sensitive(False)
+        self._canvas.set_sensitive(False)
+        self._settings_panel.set_sensitive(False)
+        self._monitors = []
+        self._canvas.monitors = []
+        self._canvas.selected = None
+        self._canvas.queue_draw()
+        self._settings_panel.load(None)
+        if error_message is not None:
+            self.main_window.add_toast(Adw.Toast.new(error_message))
 
     def _on_monitor_selected(self, m: MonitorModel | None):
         self._settings_panel.load(m)
@@ -1250,8 +1275,20 @@ class MonitorPage(Gtk.Box):
             # Hauptmonitor speichern (oder entfernen, wenn keiner markiert ist)
             primary_name = next((m.name for m in self._monitors if m.primary), None)
             _set_primary_monitor(primary_name)
-        except (LuaWriteError, RuntimeError) as e:
+        except Exception as e:
+            # By the time we get here, the writer's own transaction —
+            # including any internal rollback-and-reload — has already
+            # fully completed (see write_managed_lua_block_and_reload's
+            # `live_apply`/`_rollback_and_reload`). self._monitors and
+            # every settings-panel widget may still hold values the user
+            # picked but that were never actually applied (or were rolled
+            # back), so they must never be left showing that stale,
+            # unconfirmed state — reload from confirmed live state
+            # instead of just returning after the error toast. No
+            # success toast follows a failure, and no exception is
+            # allowed to escape this GTK callback.
             self.main_window.add_toast(Adw.Toast.new(str(e)))
+            GLib.timeout_add(600, self._reload_after_apply_failure)
             return
 
         # Taskleiste speichern
@@ -1261,6 +1298,18 @@ class MonitorPage(Gtk.Box):
         self.main_window.add_toast(
             Adw.Toast.new(t("Monitor configuration saved and applied."))
         )
+
+    def _reload_after_apply_failure(self) -> None:
+        """Reloads model/UI from confirmed safe state after a failed
+        Apply. Never lets an exception escape the GTK main loop: if the
+        safety reload itself fails unexpectedly, falls back to the same
+        neutral/disabled state `load_monitors` already uses for an
+        unreadable live state, rather than leaving stale or guessed
+        values on screen."""
+        try:
+            self.load_monitors()
+        except Exception:
+            self._set_neutral_monitor_state()
 
     def on_provider_changed(self):
         self.load_monitors()

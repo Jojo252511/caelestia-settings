@@ -803,6 +803,156 @@ pub fn parse_autostart_cmd(input: &str) -> Result<String, LuaError> {
 }
 
 // ---------------------------------------------------------------------
+// Structural classification of an `hl.on(...)` call
+// ---------------------------------------------------------------------
+//
+// `parse_autostart_cmd` above strictly parses ONE known-good shape and is
+// used to read back the app's OWN persisted value. Competing-handler
+// detection has a different job: it must look at a call this app did NOT
+// write and decide, from its literal structure alone (never guessing at
+// what a variable/table access/function call might evaluate to), whether
+// it could possibly register a `hyprland.start` handler. A previous
+// implementation pre-filtered candidates with a literal
+// `"hyprland.start"` substring check before ever parsing the call — which
+// silently missed a dynamic event expression like
+// `hl.on(EVENT, function() ... end)`, since the string `"hyprland.start"`
+// never appears verbatim in that call's own text (it's off in some other
+// assignment this codec doesn't and can't evaluate). `classify_autostart_handler`
+// replaces that: it always structurally parses the call and returns one
+// of exactly three outcomes, with no substring pre-filtering anywhere in
+// the decision.
+
+/// The result of structurally classifying a single `hl.on(...)` call this
+/// app did not itself write, for competing-handler detection.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AutostartHandlerClassification {
+    /// The event argument is a single, literal string token that is
+    /// provably NOT `"hyprland.start"` — Hyprland will never invoke this
+    /// handler for the autostart event this app cares about, so it can
+    /// never compete and is safe to ignore unconditionally.
+    OtherStaticEvent,
+    /// The event argument is the literal string `"hyprland.start"` AND
+    /// the handler body is exactly the app's own narrow supported shape
+    /// (`function() hl.exec_cmd("<cmd>") end`, nothing more, nothing
+    /// less) with a non-empty command. Carries the parsed command.
+    SupportedAutostart(String),
+    /// Anything else: the event argument is not a single literal string
+    /// (a variable, table/field access, function call, string
+    /// concatenation, or any other expression this codec does not and
+    /// cannot evaluate), OR the event is `"hyprland.start"` but the
+    /// handler body deviates from the narrow supported shape (extra
+    /// statements, a different call, a non-string/extra/missing
+    /// argument, trailing content, or any other structural mismatch).
+    /// Callers MUST treat this as "could plausibly be a competing
+    /// `hyprland.start` handler" and fail closed — this shape cannot be
+    /// proven safe to ignore.
+    Unresolved,
+}
+
+/// Structurally classifies a single `hl.on(...)` call — see
+/// [`AutostartHandlerClassification`]. Never panics; any parse failure
+/// (malformed call, `hl.on` with fewer than two arguments, ...) is
+/// reported as `Unresolved` rather than propagated as an error, since an
+/// unparseable candidate is exactly the kind of thing that must fail
+/// closed here, not be silently dropped by an error-handling caller.
+pub fn classify_autostart_handler(input: &str) -> AutostartHandlerClassification {
+    try_classify_autostart_handler(input).unwrap_or(AutostartHandlerClassification::Unresolved)
+}
+
+fn try_classify_autostart_handler(input: &str) -> Result<AutostartHandlerClassification, LuaError> {
+    let tokens = Lexer::new(input).tokenize()?;
+    let mut p = Parser { tokens, pos: 0 };
+
+    p.expect_ident("hl")?;
+    p.expect(&Token::Dot)?;
+    p.expect_ident("on")?;
+    p.expect(&Token::LParen)?;
+
+    // Find the event argument's token span: everything up to the first
+    // top-level (depth 0 relative to this call's own parens/braces/
+    // brackets) comma. This never tries to parse the *meaning* of that
+    // span — only its extent — so a dynamic expression of any shape
+    // (identifier, `a.b`, `f(...)`, `a .. b`, ...) is captured whole
+    // without needing a grammar rule for every possible expression form.
+    let event_start = p.pos;
+    let mut depth = 0i32;
+    let comma_pos = loop {
+        match p.peek() {
+            Some(Token::LParen) | Some(Token::LBrace) | Some(Token::LBracket) => {
+                depth += 1;
+                p.advance();
+            }
+            Some(Token::RParen) | Some(Token::RBrace) | Some(Token::RBracket) => {
+                if depth == 0 {
+                    // Closing paren of hl.on(...) itself reached before any
+                    // top-level comma: a one-argument (or malformed) call
+                    // with no handler at all.
+                    return Ok(AutostartHandlerClassification::Unresolved);
+                }
+                depth -= 1;
+                p.advance();
+            }
+            Some(Token::Comma) if depth == 0 => break p.pos,
+            Some(_) => {
+                p.advance();
+            }
+            None => {
+                return Err(LuaError(
+                    "hl.on(...) is missing its handler argument".into(),
+                ));
+            }
+        }
+    };
+
+    let event_tokens = &p.tokens[event_start..comma_pos];
+    let event_str = match event_tokens {
+        [Token::Str(s)] => s.clone(),
+        _ => return Ok(AutostartHandlerClassification::Unresolved),
+    };
+
+    if event_str != "hyprland.start" {
+        return Ok(AutostartHandlerClassification::OtherStaticEvent);
+    }
+
+    p.pos = comma_pos;
+    p.expect(&Token::Comma)?;
+
+    // Strictly match the app's own narrow supported handler shape. Any
+    // deviation here — including one this codec simply doesn't have a
+    // grammar rule for — is Unresolved, never a hard parse error: this
+    // function must always resolve to one of the three classifications.
+    let handler_result: Result<String, LuaError> = (|| {
+        p.expect_ident("function")?;
+        p.expect(&Token::LParen)?;
+        p.expect(&Token::RParen)?;
+        p.expect_ident("hl")?;
+        p.expect(&Token::Dot)?;
+        p.expect_ident("exec_cmd")?;
+        p.expect(&Token::LParen)?;
+        let cmd = p.expect_str()?;
+        p.expect(&Token::RParen)?;
+        p.expect_ident("end")?;
+        p.expect(&Token::RParen)?; // closes hl.on(...)
+        if p.pos != p.tokens.len() {
+            return Err(LuaError(
+                "unexpected trailing content after hl.on(...)".into(),
+            ));
+        }
+        if cmd.trim().is_empty() {
+            return Err(LuaError(
+                "autostart command must not be empty or whitespace-only".into(),
+            ));
+        }
+        Ok(cmd)
+    })();
+
+    match handler_result {
+        Ok(cmd) => Ok(AutostartHandlerClassification::SupportedAutostart(cmd)),
+        Err(_) => Ok(AutostartHandlerClassification::Unresolved),
+    }
+}
+
+// ---------------------------------------------------------------------
 // Primary-monitor xrandr command: strict validation
 // ---------------------------------------------------------------------
 //
@@ -1393,6 +1543,130 @@ hl.window_rule({ match = { class = "kitty" }, workspace = "2" })
         assert!(
             parse_autostart_cmd(r#"hl.on("hyprland.start", function() hl.exec_cmd("   ") end)"#)
                 .is_err()
+        );
+    }
+
+    // ── classify_autostart_handler ────────────────────────────────────────
+
+    #[test]
+    fn classify_recognizes_supported_hyprland_start() {
+        let src = r#"hl.on("hyprland.start", function() hl.exec_cmd("waybar") end)"#;
+        assert_eq!(
+            classify_autostart_handler(src),
+            AutostartHandlerClassification::SupportedAutostart("waybar".into())
+        );
+    }
+
+    #[test]
+    fn classify_recognizes_other_static_event() {
+        let src = r#"hl.on("window.open", function() hl.exec_cmd("waybar") end)"#;
+        assert_eq!(
+            classify_autostart_handler(src),
+            AutostartHandlerClassification::OtherStaticEvent
+        );
+    }
+
+    #[test]
+    fn classify_treats_variable_event_as_unresolved() {
+        // local EVENT = "hyprland.start"; hl.on(EVENT, function() ... end)
+        let src = r#"hl.on(EVENT, function() hl.exec_cmd("mpvpaper * /manual.mp4") end)"#;
+        assert_eq!(
+            classify_autostart_handler(src),
+            AutostartHandlerClassification::Unresolved
+        );
+    }
+
+    #[test]
+    fn classify_treats_table_access_event_as_unresolved() {
+        let src =
+            r#"hl.on(cfg.events.start, function() hl.exec_cmd("mpvpaper * /manual.mp4") end)"#;
+        assert_eq!(
+            classify_autostart_handler(src),
+            AutostartHandlerClassification::Unresolved
+        );
+    }
+
+    #[test]
+    fn classify_treats_function_call_event_as_unresolved() {
+        let src = r#"hl.on(get_event(), function() hl.exec_cmd("mpvpaper * /manual.mp4") end)"#;
+        assert_eq!(
+            classify_autostart_handler(src),
+            AutostartHandlerClassification::Unresolved
+        );
+    }
+
+    #[test]
+    fn classify_treats_dynamic_command_as_unresolved() {
+        let src = r#"hl.on("hyprland.start", function() hl.exec_cmd(cmd) end)"#;
+        assert_eq!(
+            classify_autostart_handler(src),
+            AutostartHandlerClassification::Unresolved
+        );
+    }
+
+    #[test]
+    fn classify_treats_extra_handler_content_as_unresolved() {
+        let src = r#"hl.on("hyprland.start", function() hl.exec_cmd("a") hl.exec_cmd("b") end)"#;
+        assert_eq!(
+            classify_autostart_handler(src),
+            AutostartHandlerClassification::Unresolved
+        );
+    }
+
+    #[test]
+    fn classify_treats_wrong_handler_call_as_unresolved() {
+        let src = r#"hl.on("hyprland.start", function() hl.other_call("x") end)"#;
+        assert_eq!(
+            classify_autostart_handler(src),
+            AutostartHandlerClassification::Unresolved
+        );
+    }
+
+    #[test]
+    fn classify_treats_empty_command_as_unresolved() {
+        let src = r#"hl.on("hyprland.start", function() hl.exec_cmd("") end)"#;
+        assert_eq!(
+            classify_autostart_handler(src),
+            AutostartHandlerClassification::Unresolved
+        );
+    }
+
+    #[test]
+    fn classify_treats_missing_handler_argument_as_unresolved() {
+        let src = r#"hl.on("hyprland.start")"#;
+        assert_eq!(
+            classify_autostart_handler(src),
+            AutostartHandlerClassification::Unresolved
+        );
+    }
+
+    #[test]
+    fn classify_treats_malformed_call_as_unresolved() {
+        assert_eq!(
+            classify_autostart_handler("not even a call"),
+            AutostartHandlerClassification::Unresolved
+        );
+        assert_eq!(
+            classify_autostart_handler(""),
+            AutostartHandlerClassification::Unresolved
+        );
+    }
+
+    #[test]
+    fn classify_finds_multiple_independent_handlers_in_source() {
+        let src = r#"
+hl.on("window.open", function() hl.exec_cmd("notify-send opened") end)
+hl.on("hyprland.start", function() hl.exec_cmd("waybar") end)
+"#;
+        let spans = find_calls(src, "hl.on");
+        assert_eq!(spans.len(), 2);
+        assert_eq!(
+            classify_autostart_handler(spans[0].2),
+            AutostartHandlerClassification::OtherStaticEvent
+        );
+        assert_eq!(
+            classify_autostart_handler(spans[1].2),
+            AutostartHandlerClassification::SupportedAutostart("waybar".into())
         );
     }
 

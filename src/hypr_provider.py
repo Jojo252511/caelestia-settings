@@ -386,10 +386,28 @@ def _rollback_and_reload(
     written: bytes,
     first_error: Exception,
 ) -> None:
+    """Restores `original` — the exact bytes THIS write transaction read
+    as its starting point, under the same lock, right before it wrote
+    `written` — and reloads again. Called after `reload_hyprland()`,
+    `verify()`, or `live_apply()` raises (see the `live_apply` parameter
+    on `write_managed_lua_block_and_reload`/
+    `write_managed_legacy_block_and_reload`): from here, all three
+    failure sources are handled identically, so the message below
+    deliberately says "applying the change failed" rather than assuming
+    a reload-specific failure.
+
+    Safety-critical: only ever rolls back when the file ON DISK RIGHT NOW
+    still holds exactly `written` — if some other writer's serialized
+    change landed after this transaction's own write (necessarily via
+    the same lock, so strictly after it), `current != written` and the
+    foreign change is left completely untouched rather than being
+    silently clobbered by a stale rollback.
+    """
     current = path.read_bytes() if path.exists() else b""
     if current != written:
         raise ManagedBlockError(
-            f"Reload failed and configuration changed concurrently; rollback aborted: {first_error}"
+            "Applying the change failed and configuration changed concurrently; "
+            f"rollback aborted: {first_error}"
         ) from first_error
     if existed:
         fd, tmp_name = tempfile.mkstemp(
@@ -410,11 +428,11 @@ def _rollback_and_reload(
         reload_hyprland()
     except RuntimeError as rollback_reload_error:
         raise RuntimeError(
-            "Reload failed; configuration was rolled back, but rollback reload also failed: "
-            f"{first_error}; {rollback_reload_error}"
+            "Applying the change failed; configuration was rolled back, but rollback "
+            f"reload also failed: {first_error}; {rollback_reload_error}"
         ) from first_error
     raise RuntimeError(
-        f"Reload failed; configuration was rolled back and reloaded: {first_error}"
+        f"Applying the change failed; configuration was rolled back and reloaded: {first_error}"
     ) from first_error
 
 
@@ -503,32 +521,51 @@ def find_lines_outside_managed_blocks(
 def find_competing_lua_autostart_entries(
     text: str, own_block_names: list[str], relevant: Callable[[str], bool]
 ) -> list[str]:
-    """Scans `text` for `hl.on(...)` registrations that mention
-    "hyprland.start" and fall OUTSIDE all of `own_block_names`, using
-    `caelestia_core.find_lua_calls` (tolerates arbitrary surrounding Lua,
-    including multi-line calls, and never raises on unparseable content).
-    Each candidate is strictly parsed via `caelestia_core.parse_autostart_cmd`;
-    ones that parse and whose command satisfies `relevant` are returned as
-    a match, and so is any candidate that FAILS to parse — a shape this
-    codec can't verify one way or the other must never be silently
-    ignored, since it could still be a competing dynamic override this
-    codec simply can't evaluate. Returns the raw matched Lua source text
-    of every match; never mutates `text`."""
+    """Scans `text` for `hl.on(...)` registrations that fall OUTSIDE all of
+    `own_block_names`, using `caelestia_core.find_lua_calls` (tolerates
+    arbitrary surrounding Lua, including multi-line calls, and never
+    raises on unparseable content). Every candidate call is structurally
+    classified via `caelestia_core.classify_autostart_handler` — there is
+    deliberately NO literal `"hyprland.start"` substring pre-filter here:
+    a substring check on the call's own text would silently miss a
+    dynamic event expression like `hl.on(EVENT, function() ... end)`,
+    where the string `"hyprland.start"` never appears verbatim in this
+    particular call at all (it lives in some other assignment this codec
+    doesn't and can't evaluate). Classification outcomes:
+
+    - "other_event": the call's event argument is a literal string
+      proven to be something other than "hyprland.start" — can never
+      compete, safely ignored.
+    - "supported": the event is exactly "hyprland.start" and the handler
+      body is the app's own narrow supported shape; the parsed command is
+      then filtered through `relevant` like before.
+    - "unresolved": anything else — a dynamic/indeterminate event
+      expression, OR a "hyprland.start" handler whose body doesn't match
+      the narrow supported shape (extra statements, wrong call, dynamic
+      command argument, ...). This can never be proven safe, so it is
+      ALWAYS treated as a match regardless of `relevant`, exactly like an
+      unparseable candidate always was.
+
+    Returns the raw matched Lua source text of every match; never
+    mutates `text`."""
     blocks = _scan_managed_blocks(text, "--")
     own_ranges = [blocks[name][:2] for name in own_block_names if name in blocks]
     matches = []
     for start, end, match_text in caelestia_core.find_lua_calls(text, "hl.on"):
         if any(r_start <= start < r_end for r_start, r_end in own_ranges):
             continue
-        if "hyprland.start" not in match_text:
+        kind, cmd = caelestia_core.classify_autostart_handler(match_text)
+        if kind == "other_event":
             continue
-        try:
-            cmd = caelestia_core.parse_autostart_cmd(match_text)
-        except ValueError:
-            matches.append(match_text)
+        if kind == "supported":
+            if relevant(cmd):
+                matches.append(match_text)
             continue
-        if relevant(cmd):
-            matches.append(match_text)
+        # kind == "unresolved": a shape this codec can't verify one way
+        # or the other must never be silently ignored, since it could
+        # still be a competing dynamic override this codec simply can't
+        # evaluate.
+        matches.append(match_text)
     return matches
 
 
@@ -581,6 +618,7 @@ def write_managed_lua_block_and_reload(
     *,
     pre_write_check: Callable[[str], None] | None = None,
     verify: Callable[[], None] | None = None,
+    live_apply: Callable[[], None] | None = None,
 ) -> None:
     """Commit a validated block, reload, and roll back plus reload again on failure.
 
@@ -595,6 +633,22 @@ def write_managed_lua_block_and_reload(
     `verify`, if given, runs after reload while the same lock is still
     held. Any `Exception` triggers restoration of the original bytes and
     a second reload, matching `update_managed_lua_block_and_reload`.
+
+    `live_apply`, if given, runs immediately after `verify` (or right
+    after reload if `verify` is absent) — STILL under the same write
+    lock. It is for a live, external side effect that must be attempted
+    only once persistence has genuinely succeeded (e.g. spawning
+    mpvpaper, or calling `xrandr` to change the primary monitor). Any
+    `Exception` it raises gets exactly the same rollback treatment as a
+    `verify` failure: `_rollback_and_reload` restores `original` — the
+    EXACT bytes this specific write transaction read as its starting
+    point under this same lock, never a caller's separately, possibly
+    earlier, pre-lock snapshot — and reloads again. This is what makes
+    the rollback base race-free: if some other writer's serialized change
+    already landed between an outer caller's own pre-lock read and this
+    lock being acquired, `original` here already reflects that change,
+    so a failed `live_apply` correctly rolls back to it, not to a stale
+    value the caller might otherwise have captured earlier.
     """
     luac = shutil.which("luac")
     if luac is None:
@@ -622,6 +676,8 @@ def write_managed_lua_block_and_reload(
             reload_hyprland()
             if verify is not None:
                 verify()
+            if live_apply is not None:
+                live_apply()
         except Exception as first_error:
             _rollback_and_reload(
                 path,
@@ -722,6 +778,7 @@ def write_managed_legacy_block_and_reload(
     legacy_predicate: Callable[[str], bool] | None = None,
     pre_write_check: Callable[[str], None] | None = None,
     verify: Callable[[], None] | None = None,
+    live_apply: Callable[[], None] | None = None,
 ) -> None:
     """Atomically write a legacy block, reload, and roll back on reload failure.
 
@@ -755,7 +812,11 @@ def write_managed_legacy_block_and_reload(
     `write_managed_lua_block_and_reload` for the same parameter.
 
     `verify` has the same post-reload rollback semantics as the Lua
-    writer and also executes while this lock is held.
+    writer and also executes while this lock is held. `live_apply` has
+    the same "run after verify, under the same lock, roll back to this
+    transaction's own `original` bytes on failure" semantics as in
+    `write_managed_lua_block_and_reload` — see that function's docstring
+    for why this is what makes the rollback base race-free.
     """
 
     def _check_legacy(existing: str) -> None:
@@ -800,6 +861,8 @@ def write_managed_legacy_block_and_reload(
             reload_hyprland()
             if verify is not None:
                 verify()
+            if live_apply is not None:
+                live_apply()
         except Exception as first_error:
             _rollback_and_reload(
                 path,

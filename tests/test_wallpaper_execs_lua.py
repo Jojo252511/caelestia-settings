@@ -129,10 +129,10 @@ class ExecsPathResolutionTest(unittest.TestCase):
              mock.patch.object(monitor, "write_managed_lua_block_and_reload"):
             resolve_mock.return_value = Path(self._tmpdir.name) / "execs.lua"
             monitor._set_primary_monitor(None)
-        # Called at least once for the pre-write snapshot read and once
-        # for the write itself — every call must resolve the same domain.
-        resolve_mock.assert_called_with("execs", hp.Provider.LUA)
-        self.assertGreaterEqual(resolve_mock.call_count, 2)
+        # The live-apply call now runs inside the writer's own lock (see
+        # the `live_apply` parameter), so there is exactly one snapshot
+        # read left — the write itself.
+        resolve_mock.assert_called_once_with("execs", hp.Provider.LUA)
 
     def test_lua_path_ends_in_dot_lua_and_legacy_in_dot_conf(self):
         self.assertTrue(str(hp.LUA_PATHS["execs"]).endswith(".lua"))
@@ -615,23 +615,32 @@ class PrimaryMonitorXrandrErrorTest(_RealFileWriterTestBase):
             monitor._set_primary_monitor("BOGUS")
         self.assertEqual(monitor._get_primary_monitor(hp.Provider.HYPRLANG), "")
 
-    def test_second_reload_and_double_error_message_when_rollback_write_also_fails(self):
+    def test_second_reload_runs_after_live_apply_failure(self):
+        # The live-apply failure must trigger a genuine second
+        # `hyprctl reload` as part of the writer's own rollback — not a
+        # separate manual restore step.
         bad_result = mock.MagicMock(returncode=1, stdout="", stderr="xrandr failed")
         p1, p2 = self._legacy_ctx()
-        with (
-            p1, p2,
-            mock.patch.object(monitor.subprocess, "run", return_value=bad_result),
-            mock.patch.object(
-                monitor,
-                "_write_primary_monitor_lines",
-                side_effect=[None, hp.ManagedBlockError("concurrent edit")],
-            ),
-        ):
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", return_value=bad_result), \
+             self.assertRaises(RuntimeError):
+            monitor._set_primary_monitor("BOGUS")
+        self.assertEqual(self.reload_mock.call_count, 2)
+
+    def test_second_reload_failure_surfaces_double_error_message(self):
+        # If the rollback's own second reload ALSO fails, the caller
+        # must still see a full, non-silent error mentioning both the
+        # original live-apply failure and the rollback-reload failure —
+        # never a silent/partial success.
+        bad_result = mock.MagicMock(returncode=1, stdout="", stderr="xrandr failed")
+        self.reload_mock.side_effect = [None, RuntimeError("rollback reload boom")]
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, mock.patch.object(monitor.subprocess, "run", return_value=bad_result):
             with self.assertRaises(RuntimeError) as ctx:
                 monitor._set_primary_monitor("BOGUS")
         message = str(ctx.exception)
         self.assertIn("xrandr failed", message)
-        self.assertIn("concurrent edit", message)
+        self.assertIn("rollback reload boom", message)
+        self.assertEqual(self.reload_mock.call_count, 2)
 
 
 class PrimaryMonitorRemovalTest(_RealFileWriterTestBase):
@@ -820,6 +829,233 @@ class CompetingPrimaryMonitorHandlerTest(_RealFileWriterTestBase):
                 'hl.exec_cmd("xrandr --output MANUAL --primary") end)\n'
             )
             self.assertTrue(monitor._has_competing_primary_monitor_handler(hp.Provider.LUA))
+
+
+# ── M6.3 hardening: structural (not substring-prefiltered) hl.on(...) ──────
+# classification for competing-handler detection.
+
+
+class DynamicAutostartHandlerDetectionTest(unittest.TestCase):
+    """`find_competing_lua_autostart_entries` must classify every
+    `hl.on(...)` call structurally via `caelestia_core.classify_autostart_handler`
+    — never pre-filter by a literal `"hyprland.start"` substring, which
+    would silently miss a dynamic event expression (a variable, table
+    access, function call, ...) whose value can equal "hyprland.start"
+    without that literal text ever appearing in the call itself."""
+
+    @staticmethod
+    def _mpvpaper_relevant(cmd: str) -> bool:
+        return "mpvpaper" in cmd
+
+    def test_variable_event_is_treated_as_competing(self):
+        text = (
+            'local EVENT = "hyprland.start"\n\n'
+            "hl.on(EVENT, function()\n"
+            "    hl.exec_cmd(\"mpvpaper '*' /manual.mp4\")\n"
+            "end)\n"
+        )
+        matches = hp.find_competing_lua_autostart_entries(
+            text, ["wallpaper-autostart"], self._mpvpaper_relevant
+        )
+        self.assertEqual(len(matches), 1)
+
+    def test_table_access_event_is_treated_as_competing(self):
+        text = 'hl.on(cfg.events.start, function() hl.exec_cmd("mpvpaper \'*\' /manual.mp4") end)\n'
+        matches = hp.find_competing_lua_autostart_entries(
+            text, ["wallpaper-autostart"], self._mpvpaper_relevant
+        )
+        self.assertEqual(len(matches), 1)
+
+    def test_function_call_event_is_treated_as_competing(self):
+        text = 'hl.on(get_event(), function() hl.exec_cmd("mpvpaper \'*\' /manual.mp4") end)\n'
+        matches = hp.find_competing_lua_autostart_entries(
+            text, ["wallpaper-autostart"], self._mpvpaper_relevant
+        )
+        self.assertEqual(len(matches), 1)
+
+    def test_dynamic_command_argument_is_treated_as_competing(self):
+        text = 'hl.on("hyprland.start", function() hl.exec_cmd(cmd) end)\n'
+        matches = hp.find_competing_lua_autostart_entries(
+            text, ["wallpaper-autostart"], self._mpvpaper_relevant
+        )
+        self.assertEqual(len(matches), 1)
+
+    def test_extra_handler_statement_is_treated_as_competing(self):
+        text = (
+            'hl.on("hyprland.start", function() '
+            'hl.exec_cmd("mpvpaper \'*\' /a.mp4") hl.exec_cmd("mpvpaper \'*\' /b.mp4") end)\n'
+        )
+        matches = hp.find_competing_lua_autostart_entries(
+            text, ["wallpaper-autostart"], self._mpvpaper_relevant
+        )
+        self.assertEqual(len(matches), 1)
+
+    def test_multiple_handlers_only_relevant_ones_flagged(self):
+        text = (
+            'hl.on("window.open", function() hl.exec_cmd("notify-send hi") end)\n'
+            'hl.on("hyprland.start", function() hl.exec_cmd("waybar") end)\n'
+            'hl.on(EVENT, function() hl.exec_cmd("mpvpaper \'*\' /manual.mp4") end)\n'
+        )
+        matches = hp.find_competing_lua_autostart_entries(
+            text, ["wallpaper-autostart"], self._mpvpaper_relevant
+        )
+        self.assertEqual(len(matches), 1)
+        self.assertIn("EVENT", matches[0])
+
+    def test_literal_other_event_still_ignored(self):
+        text = 'hl.on("window.open", function() hl.exec_cmd("mpvpaper \'*\' /manual.mp4") end)\n'
+        matches = hp.find_competing_lua_autostart_entries(
+            text, ["wallpaper-autostart"], self._mpvpaper_relevant
+        )
+        self.assertEqual(matches, [])
+
+    def test_literal_hyprland_start_still_flagged_when_relevant(self):
+        text = 'hl.on("hyprland.start", function() hl.exec_cmd("mpvpaper \'*\' /manual.mp4") end)\n'
+        matches = hp.find_competing_lua_autostart_entries(
+            text, ["wallpaper-autostart"], self._mpvpaper_relevant
+        )
+        self.assertEqual(len(matches), 1)
+
+    def test_dynamic_event_before_and_after_own_block(self):
+        text = (
+            'hl.on(EVENT, function() hl.exec_cmd("mpvpaper \'*\' /before.mp4") end)\n'
+            "-- BEGIN Caelestia Settings managed block: wallpaper-autostart\n"
+            "-- END Caelestia Settings managed block: wallpaper-autostart\n"
+            'hl.on(EVENT2, function() hl.exec_cmd("mpvpaper \'*\' /after.mp4") end)\n'
+        )
+        matches = hp.find_competing_lua_autostart_entries(
+            text, ["wallpaper-autostart"], self._mpvpaper_relevant
+        )
+        self.assertEqual(len(matches), 2)
+
+    def test_dynamic_event_xrandr_relevance_predicate(self):
+        def xrandr_relevant(cmd: str) -> bool:
+            return "xrandr" in cmd and "--primary" in cmd
+
+        text = 'hl.on(EVENT, function() hl.exec_cmd("xrandr --output DP-2 --primary") end)\n'
+        matches = hp.find_competing_lua_autostart_entries(
+            text, ["primary-monitor"], xrandr_relevant
+        )
+        self.assertEqual(len(matches), 1)
+
+
+class DynamicHandlerFailsClosedAtWriterLevelTest(_RealFileWriterTestBase):
+    """The writer-level (not just detection-level) proof: a dynamic
+    event expression that COULD be a competing handler must actually
+    block the real write, leave the file byte-for-byte untouched, never
+    reload, and never leave a second active app-owned handler behind."""
+
+    def test_wallpaper_write_blocked_by_dynamic_event_expression(self):
+        self.execs_lua.write_text(
+            'local EVENT = "hyprland.start"\n'
+            'hl.on(EVENT, function() hl.exec_cmd("mpvpaper \'*\' /manual.mp4") end)\n'
+        )
+        original = self.execs_lua.read_text()
+        p1, p2 = self._lua_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            wallpaper._write_mpvpaper_autostart(Path("/tmp/new.mp4"))
+        self.assertEqual(self.execs_lua.read_text(), original)
+        self.reload_mock.assert_not_called()
+        self.assertEqual(
+            hp.read_managed_lua_block(self.execs_lua, wallpaper.WALLPAPER_AUTOSTART_BLOCK), []
+        )
+
+    def test_primary_monitor_write_blocked_by_dynamic_event_expression(self):
+        self.execs_lua.write_text(
+            'local EVENT = "hyprland.start"\n'
+            'hl.on(EVENT, function() hl.exec_cmd("xrandr --output MANUAL --primary") end)\n'
+        )
+        original = self.execs_lua.read_text()
+        p1, p2 = self._lua_ctx()
+        with p1, p2, self.assertRaises(hp.ManagedBlockError):
+            monitor._set_primary_monitor("DP-1")
+        self.assertEqual(self.execs_lua.read_text(), original)
+        self.reload_mock.assert_not_called()
+        self.assertEqual(
+            hp.read_managed_lua_block(self.execs_lua, monitor.PRIMARY_MONITOR_BLOCK), []
+        )
+
+
+# ── M6.3 hardening: race-free rollback base under real writer/page paths ───
+
+
+class WriterTransactionRaceAtPageLevelTest(_RealFileWriterTestBase):
+    """OLD -> CONCURRENT -> NEW -> live-apply-failure, exercised through
+    the actual `wallpaper._write_mpvpaper_autostart` / `monitor._set_primary_monitor`
+    call sites (not just the shared writer directly) — proves the fix
+    holds at every real call site, under both providers."""
+
+    def _race(self, path: Path, concurrent_bytes: bytes):
+        real_lock = hp._with_managed_write_lock
+        injected = {"done": False}
+
+        def racing_lock(p):
+            lock = real_lock(p)
+            if not injected["done"]:
+                injected["done"] = True
+                path.write_bytes(concurrent_bytes)
+            return lock
+
+        return racing_lock
+
+    def test_wallpaper_lua_live_failure_preserves_concurrent_content(self):
+        concurrent = b"-- manually added by another tool\nlocal unrelated = 1\n"
+        p1, p2 = self._lua_ctx()
+        with p1, p2, mock.patch.object(
+            hp, "_with_managed_write_lock", side_effect=self._race(self.execs_lua, concurrent)
+        ):
+            with self.assertRaises(RuntimeError):
+                wallpaper._write_mpvpaper_autostart(
+                    Path("/tmp/new.mp4"),
+                    live_apply=lambda: (_ for _ in ()).throw(OSError("mpvpaper boom")),
+                )
+        self.assertEqual(self.execs_lua.read_bytes(), concurrent)
+
+    def test_wallpaper_legacy_live_failure_preserves_concurrent_content(self):
+        concurrent = b"exec-once = unrelated-thing  # manual\n"
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, mock.patch.object(
+            hp, "_with_managed_write_lock", side_effect=self._race(self.execs_conf, concurrent)
+        ):
+            with self.assertRaises(RuntimeError):
+                wallpaper._write_mpvpaper_autostart(
+                    Path("/tmp/new.mp4"),
+                    live_apply=lambda: (_ for _ in ()).throw(OSError("mpvpaper boom")),
+                )
+        self.assertEqual(self.execs_conf.read_bytes(), concurrent)
+
+    def test_primary_monitor_lua_live_failure_preserves_concurrent_content(self):
+        # subprocess.run is one shared module attribute — luac -p
+        # validation inside the writer must still run for real here, so
+        # dispatch by argv[0] (like _InterceptedRun) instead of a blanket
+        # failing mock, which would fail luac validation itself before
+        # ever reaching the xrandr live-apply call this test targets.
+        concurrent = b"-- manually added\nlocal x = 1\n"
+        bad_xrandr_result = mock.MagicMock(returncode=1, stdout="", stderr="xrandr failed")
+
+        def dispatch(args, *a, **kw):
+            if args and "luac" in str(args[0]):
+                return _REAL_SUBPROCESS_RUN(args, *a, **kw)
+            return bad_xrandr_result
+
+        p1, p2 = self._lua_ctx()
+        with p1, p2, \
+             mock.patch.object(hp, "_with_managed_write_lock", side_effect=self._race(self.execs_lua, concurrent)), \
+             mock.patch.object(monitor.subprocess, "run", side_effect=dispatch):
+            with self.assertRaises(RuntimeError):
+                monitor._set_primary_monitor("DP-1")
+        self.assertEqual(self.execs_lua.read_bytes(), concurrent)
+
+    def test_primary_monitor_legacy_live_failure_preserves_concurrent_content(self):
+        concurrent = b"exec-once = unrelated-thing  # manual\n"
+        bad_result = mock.MagicMock(returncode=1, stdout="", stderr="xrandr failed")
+        p1, p2 = self._legacy_ctx()
+        with p1, p2, \
+             mock.patch.object(hp, "_with_managed_write_lock", side_effect=self._race(self.execs_conf, concurrent)), \
+             mock.patch.object(monitor.subprocess, "run", return_value=bad_result):
+            with self.assertRaises(RuntimeError):
+                monitor._set_primary_monitor("DP-1")
+        self.assertEqual(self.execs_conf.read_bytes(), concurrent)
 
 
 # ── M6.1 hardening: legacy_predicate / pre_write_check re-verified under lock ──

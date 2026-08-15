@@ -15,6 +15,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
 from src import hypr_provider as hp
+from src.lang import t
 from src.pages import monitor
 
 
@@ -393,7 +394,12 @@ class MonitorDisableUiTest(unittest.TestCase):
         page._monitors.append(_model("DP-3"))
         self.assertTrue(monitor.MonitorPage._can_disable_monitor_hint(page, only))
 
-    def test_apply_guard_error_has_no_success_or_followup_side_effects(self):
+    def test_apply_guard_error_has_no_success_side_effects_but_schedules_safe_reload(self):
+        # M6.3: a failed Apply must never leave the model/widgets showing
+        # stale, never-actually-applied values — it schedules the same
+        # safe-state reload used elsewhere (_reload_after_apply_failure),
+        # just never the SUCCESS side effects (bar persistence, success
+        # toast).
         page = monitor.MonitorPage.__new__(monitor.MonitorPage)
         page._monitors = [_model("DP-1", disabled=True)]
         page.main_window = mock.MagicMock()
@@ -408,7 +414,7 @@ class MonitorDisableUiTest(unittest.TestCase):
             monitor.MonitorPage._on_apply(page, mock.MagicMock())
         primary.assert_not_called()
         bar.assert_not_called()
-        timeout.assert_not_called()
+        timeout.assert_called_once_with(600, page._reload_after_apply_failure)
         page.main_window.add_toast.assert_called_once()
         self.assertEqual(page.main_window.add_toast.call_args.args[0].get_title(), "last monitor")
 
@@ -473,6 +479,206 @@ class VerificationRollbackTest(unittest.TestCase):
 def _raise(error):
     if error is not None:
         raise error
+
+
+# ── M6.3 finding 3: Monitor UI resets to a safe/confirmed state after any
+# Apply failure — never leaves stale, never-actually-applied values on
+# screen, never shows a success toast, never lets an exception escape the
+# GTK callback. ──────────────────────────────────────────────────────────
+
+
+def _apply_test_page(monitors):
+    page = monitor.MonitorPage.__new__(monitor.MonitorPage)
+    page.main_window = mock.MagicMock()
+    page._monitors = monitors
+    page._canvas = mock.MagicMock()
+    page._settings_panel = mock.MagicMock()
+    page._apply_btn = mock.MagicMock()
+    return page
+
+
+class ApplyFailureSafeReloadTest(unittest.TestCase):
+    def _assert_no_success_but_schedules_safe_reload(self, page):
+        """Common assertions for every failure-mode test below: only the
+        error toast was shown (never a success one), and the safe-state
+        reload was scheduled via the same `_reload_after_apply_failure`
+        hook — never a raw, unguarded `self.load_monitors`."""
+        self.assertEqual(page.main_window.add_toast.call_count, 1)
+        toast_text = page.main_window.add_toast.call_args.args[0].get_title()
+        self.assertNotIn("saved and applied", toast_text)
+
+    def test_write_failure_shows_error_and_schedules_safe_reload(self):
+        page = _apply_test_page([_model("DP-1")])
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(
+                monitor, "_save_monitors_lua_and_reload",
+                side_effect=hp.LuaWriteError("invalid lua"),
+            ),
+            mock.patch.object(monitor, "_set_primary_monitor") as primary,
+            mock.patch.object(monitor.GLib, "timeout_add") as timeout,
+        ):
+            monitor.MonitorPage._on_apply(page, mock.MagicMock())
+        primary.assert_not_called()
+        timeout.assert_called_once_with(600, page._reload_after_apply_failure)
+        self._assert_no_success_but_schedules_safe_reload(page)
+
+    def test_reload_failure_shows_error_and_schedules_safe_reload(self):
+        page = _apply_test_page([_model("DP-1")])
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(
+                monitor, "_save_monitors_lua_and_reload",
+                side_effect=RuntimeError("Applying the change failed; configuration was rolled back and reloaded: reload boom"),
+            ),
+            mock.patch.object(monitor, "_set_primary_monitor") as primary,
+            mock.patch.object(monitor.GLib, "timeout_add") as timeout,
+        ):
+            monitor.MonitorPage._on_apply(page, mock.MagicMock())
+        primary.assert_not_called()
+        timeout.assert_called_once_with(600, page._reload_after_apply_failure)
+        self._assert_no_success_but_schedules_safe_reload(page)
+
+    def test_verification_failure_shows_error_and_schedules_safe_reload(self):
+        page = _apply_test_page([_model("DP-1", disabled=True)])
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(
+                monitor, "_save_monitors_lua_and_reload",
+                side_effect=monitor.MonitorDisableSafetyError(
+                    "The monitor deactivation could not be verified; the change was rolled back."
+                ),
+            ),
+            mock.patch.object(monitor, "_set_primary_monitor") as primary,
+            mock.patch.object(monitor.GLib, "timeout_add") as timeout,
+        ):
+            monitor.MonitorPage._on_apply(page, mock.MagicMock())
+        primary.assert_not_called()
+        timeout.assert_called_once_with(600, page._reload_after_apply_failure)
+        self._assert_no_success_but_schedules_safe_reload(page)
+
+    def test_xrandr_failure_shows_error_and_schedules_safe_reload(self):
+        page = _apply_test_page([_model("DP-1")])
+        page._monitors[0].primary = True
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(monitor, "_save_monitors_lua_and_reload"),
+            mock.patch.object(
+                monitor, "_set_primary_monitor", side_effect=RuntimeError("xrandr failed")
+            ),
+            mock.patch.object(monitor, "_set_bar_persistent") as bar,
+            mock.patch.object(monitor.GLib, "timeout_add") as timeout,
+        ):
+            monitor.MonitorPage._on_apply(page, mock.MagicMock())
+        bar.assert_not_called()
+        timeout.assert_called_once_with(600, page._reload_after_apply_failure)
+        self._assert_no_success_but_schedules_safe_reload(page)
+
+    def test_rollback_reload_failure_shows_error_and_schedules_safe_reload(self):
+        page = _apply_test_page([_model("DP-1")])
+        double_failure = RuntimeError(
+            "Applying the change failed; configuration was rolled back, but rollback "
+            "reload also failed: xrandr failed; rollback reload boom"
+        )
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(monitor, "_save_monitors_lua_and_reload"),
+            mock.patch.object(monitor, "_set_primary_monitor", side_effect=double_failure),
+            mock.patch.object(monitor.GLib, "timeout_add") as timeout,
+        ):
+            monitor.MonitorPage._on_apply(page, mock.MagicMock())
+        timeout.assert_called_once_with(600, page._reload_after_apply_failure)
+        self._assert_no_success_but_schedules_safe_reload(page)
+        toast_text = page.main_window.add_toast.call_args.args[0].get_title()
+        self.assertIn("xrandr failed", toast_text)
+        self.assertIn("rollback reload boom", toast_text)
+
+    def test_safe_reload_failure_falls_back_to_neutral_state_without_raising(self):
+        # If load_monitors() itself can't determine safe state during the
+        # post-failure reload, _reload_after_apply_failure must still
+        # never raise, and must leave the UI in the same neutral/disabled
+        # state used elsewhere for "state unreadable" — never stale or
+        # guessed values.
+        page = _apply_test_page([_model("DP-1")])
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(monitor, "_get_live_monitors", side_effect=RuntimeError("hyprctl gone")),
+        ):
+            page._reload_after_apply_failure()  # must not raise
+        page._apply_btn.set_sensitive.assert_called_with(False)
+        page._canvas.set_sensitive.assert_called_with(False)
+        page._settings_panel.set_sensitive.assert_called_with(False)
+        self.assertEqual(page._monitors, [])
+
+    def test_model_and_widget_state_after_rollback_reflects_confirmed_state_not_stale_input(self):
+        # The user had ticked "primary" on a monitor and disabled another
+        # before hitting Apply; the write fails. After the safety reload,
+        # the model must reflect the CONFIRMED live state, not what the
+        # user had picked but that was never actually applied.
+        stale = _model("DP-1")
+        stale.primary = True
+        stale.disabled = True
+        page = _apply_test_page([stale])
+        confirmed_raw = [{
+            "name": "DP-1", "description": "DP-1", "x": 0, "y": 0,
+            "width": 1920, "height": 1080, "scale": 1.0, "transform": 0,
+            "disabled": False, "refreshRate": 60.0,
+        }]
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(monitor, "_get_live_monitors", return_value=confirmed_raw),
+            mock.patch.object(monitor, "_has_competing_primary_monitor_handler", return_value=False),
+            mock.patch.object(monitor, "_get_primary_monitor", return_value=""),
+            mock.patch.object(monitor, "_get_bar_persistent", return_value=True),
+        ):
+            page._reload_after_apply_failure()
+        self.assertEqual(len(page._monitors), 1)
+        confirmed = page._monitors[0]
+        self.assertIsNot(confirmed, stale)
+        self.assertFalse(confirmed.disabled)
+        self.assertFalse(confirmed.primary)
+
+    def test_no_recursive_write_during_safe_reload(self):
+        page = _apply_test_page([_model("DP-1")])
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(monitor, "_get_live_monitors", return_value=[]),
+            mock.patch.object(monitor, "_has_competing_primary_monitor_handler", return_value=False),
+            mock.patch.object(monitor, "_get_primary_monitor", return_value=""),
+            mock.patch.object(monitor, "_save_monitors_lua_and_reload") as save_lua,
+            mock.patch.object(monitor, "_save_monitors_conf") as save_conf,
+            mock.patch.object(monitor, "_set_primary_monitor") as set_primary,
+        ):
+            page._reload_after_apply_failure()
+        save_lua.assert_not_called()
+        save_conf.assert_not_called()
+        set_primary.assert_not_called()
+
+    def test_last_active_monitor_guard_still_blocks_apply(self):
+        # Regression: the M6.2 last-active-monitor protection must keep
+        # working through _on_apply after the M6.3 error-handling change.
+        page = _apply_test_page([_model("DP-1", disabled=True)])
+        with (
+            mock.patch.object(monitor, "load_provider", return_value=hp.Provider.LUA),
+            # _save_monitors_lua_and_reload runs for real here (not
+            # mocked) so its own require_config_capability() call — which
+            # reads hp's OWN load_provider() reference, not monitor's
+            # imported name — must be patched too.
+            mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(
+                monitor, "_query_hyprctl_monitors_all",
+                return_value=_live(("DP-1", False)),
+            ),
+            mock.patch.object(monitor, "_set_primary_monitor") as primary,
+            mock.patch.object(monitor, "_set_bar_persistent") as bar,
+            mock.patch.object(monitor.GLib, "timeout_add") as timeout,
+        ):
+            monitor.MonitorPage._on_apply(page, mock.MagicMock())
+        primary.assert_not_called()
+        bar.assert_not_called()
+        timeout.assert_called_once_with(600, page._reload_after_apply_failure)
+        toast_text = page.main_window.add_toast.call_args.args[0].get_title()
+        self.assertEqual(toast_text, t("The last active monitor cannot be disabled."))
 
 
 if __name__ == "__main__":
