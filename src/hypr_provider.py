@@ -512,6 +512,82 @@ def write_managed_lua_block_and_reload(path: Path, block_name: str, managed_line
             )
 
 
+def update_managed_lua_block_and_reload(
+    path: Path,
+    block_name: str,
+    transform: Callable[[list[str]], list[str]],
+    *,
+    verify: Callable[[], None] | None = None,
+) -> None:
+    """Like write_managed_lua_block_and_reload, but takes a pure
+    `transform` callback instead of the new content directly. `transform`
+    receives the block's CURRENT content — read fresh, under the same
+    lock, from the exact original bytes about to be replaced — and must
+    return the new content.
+
+    This closes a TOCTOU race a caller would otherwise have if it read
+    the block's current content itself *before* acquiring the lock:
+    another writer could change the file in between, and the caller's
+    stale read would silently clobber that change when it finally writes.
+    Because `transform` only ever sees content read after the lock is
+    held, whatever it returns is always based on the latest state on
+    disk. `transform` must be pure — no file I/O of its own, and it must
+    not try to acquire the same lock (no nested locking; see
+    `_with_managed_write_lock`, which is not reentrant and would just
+    time out against itself).
+
+    `verify`, if given, is called once immediately after a successful
+    reload. If it raises `RuntimeError` — e.g. because the reloaded
+    configuration's live, observed effect doesn't match what was just
+    written (a later manual entry elsewhere in the file could still be
+    taking priority) — the write is treated exactly like a failed reload:
+    the file is rolled back to its previous bytes and reloaded a second
+    time, and the original error propagates. This lets a caller confirm a
+    write actually took effect, not just that Hyprland accepted the
+    config syntactically, under the same transaction and lock as the
+    write itself.
+    """
+    luac = shutil.which("luac")
+    if luac is None:
+        raise LuaWriteError(t("Lua compiler (luac) is required; changes were not applied."))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _with_managed_write_lock(path):
+        existed = path.exists()
+        original = path.read_bytes() if existed else b""
+        existing_text = original.decode("utf-8")
+        current_block = _scan_managed_blocks(existing_text, "--").get(block_name)
+        current_lines = (
+            existing_text[current_block[2] : current_block[3]].splitlines()
+            if current_block is not None
+            else []
+        )
+        managed_lines = transform(current_lines)
+        new_content = _render_managed_content(
+            existing_text, block_name, managed_lines, comment_prefix="--"
+        )
+
+        def validate(tmp_path: Path) -> None:
+            result = subprocess.run([luac, "-p", str(tmp_path)], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                raise LuaWriteError(
+                    t("Generated Lua is invalid, changes were not applied:") + f"\n{result.stderr.strip()}"
+                )
+
+        _atomic_replace_locked(path, new_content, original, validate)
+        try:
+            reload_hyprland()
+            if verify is not None:
+                verify()
+        except RuntimeError as first_error:
+            _rollback_and_reload(
+                path,
+                existed=existed,
+                original=original,
+                written=new_content.encode("utf-8"),
+                first_error=first_error,
+            )
+
+
 def write_managed_legacy_block_and_reload(
     path: Path,
     block_name: str,

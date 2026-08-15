@@ -162,11 +162,16 @@ class ProviderDependentReadTest(unittest.TestCase):
         # under Provider.LUA the app's own (real, but nonexistent, so
         # harmless) input.lua path IS checked for existence — but the
         # legacy .conf format (read via Path.read_text) must never be
-        # touched by any provider, including Lua.
+        # touched by any provider, including Lua. The effective value
+        # itself comes from `hyprctl -j getoption` as of M5.1, not file
+        # parsing, so that's mocked here too for a deterministic result
+        # regardless of whether this machine has a real Hyprland session.
         lua_input_path = Path(self._tmpdir.name) / "input.lua"
         with (
             mock.patch.dict(hp.LUA_PATHS, {"input": lua_input_path}),
             mock.patch.object(Path, "read_text") as read_text,
+            mock.patch.object(general, "_get_effective_kb_layout", return_value=None),
+            mock.patch.object(general, "_get_effective_numlock", return_value=None),
         ):
             self.assertEqual(general.read_input_conf(hp.Provider.LUA), {})
             self.assertEqual(keybinds.parse_keybinds(hp.Provider.LUA), [])
@@ -275,16 +280,20 @@ class ProviderDependentReadTest(unittest.TestCase):
         main_window.keybinds_page.on_provider_changed.assert_not_called()
 
     def test_persisted_provider_routes_initial_reads(self):
-        # input.lua is patched to a nonexistent temp path so the LUA case
-        # deterministically resolves "not statically known" (-> None)
-        # instead of depending on whatever real ~/.config/hypr/hyprland/
-        # input.lua happens to contain on the machine running this test.
+        # input.lua is patched to a nonexistent temp path, and the
+        # effective-value getters (hyprctl -j getoption as of M5.1) are
+        # mocked to "unreachable", so the LUA case deterministically
+        # resolves "not known" (-> None) instead of depending on whatever
+        # real Hyprland session/config happens to be reachable on the
+        # machine running this test.
         lua_input_path = Path(self._tmpdir.name) / "input.lua"
         with (
             mock.patch.object(general, "HYPR_INPUT_CONF", self.input_conf),
             mock.patch.object(keybinds, "KEYBINDS_CONF", self.keybinds_conf),
             mock.patch.object(keybinds, "VARIABLES_CONF", self.variables_conf),
             mock.patch.dict(hp.LUA_PATHS, {"input": lua_input_path}),
+            mock.patch.object(general, "_get_effective_kb_layout", return_value=None),
+            mock.patch.object(general, "_get_effective_numlock", return_value=None),
         ):
             for provider, expected_layout, expected_bind_count in (
                 (None, None, 0),

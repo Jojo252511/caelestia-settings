@@ -1,4 +1,6 @@
+import json
 import re
+import shutil
 import subprocess
 import caelestia_core
 from gi.repository import Gtk, Adw
@@ -12,7 +14,7 @@ from src.hypr_provider import (
     read_managed_lua_block,
     require_config_capability,
     resolve_path,
-    write_managed_lua_block_and_reload,
+    update_managed_lua_block_and_reload,
 )
 from src.lang import t
 
@@ -126,27 +128,38 @@ _PROVIDER_UNSET = object()
 #
 # input.lua may contain manual, hand-written hl.config({ input = {...} })
 # calls anywhere in the file — single- or multi-line, mixed with comments,
-# other top-level sections (general, decoration, ...), and other input
-# fields this app doesn't own (touchpad, sensitivity, ...). Hyprland itself
-# applies whichever static assignment of a field appears LAST in the file,
-# so reading mirrors that: every hl.config(...) call is located with
-# caelestia_core.find_lua_calls and scanned in file order, and the last
-# statically-known value per field wins. A call (or a single field within
-# one) that isn't a supported static shape is simply skipped — read-only,
-# never rewritten, never a reason to abort reading the rest of the file.
+# other top-level sections (general, decoration, ...), other input fields
+# this app doesn't own (touchpad, sensitivity, ...), and possibly more than
+# one hl.config(...) call with dynamic (vars.foo) or otherwise unparsebable
+# values. A static value from an EARLIER call must never be shown as the
+# "current" value once a LATER call could plausibly have overridden it with
+# something this codec can't evaluate — that would show a guess, not a
+# fact. Only Hyprland itself reliably knows which call actually took
+# effect, so the EFFECTIVE value shown to the user comes from Hyprland's
+# own live-resolved state (`hyprctl -j getoption`), never from statically
+# picking a "winning" call ourselves. `hyprctl` unreachable, non-zero, or
+# an unexpected/ambiguous JSON shape all mean "unknown" — never a guessed
+# default.
 #
-# The app's own writes only ever touch a single hl.config({ input = {...} })
-# call inside the "input" managed block. When only one of the two fields
-# changes, the other field's value is taken from the app's OWN managed
-# block (never from some other manual call elsewhere in the file) so a
-# partial update never adopts or overwrites content it doesn't own.
+# Static file parsing (_merge_static_input_calls) is still used, but only
+# for a narrower, safe purpose: reading back the app's OWN previously
+# written managed-block content at write time, so a partial update (only
+# one of the two fields changing) can preserve the other field's
+# already-app-managed value without adopting or guessing anything.
 
 
 def _merge_static_input_calls(text: str) -> dict:
     """Scans `text` for every hl.config({ input = {...} }) call and returns
     the last statically-known value per input field, in file order — later
-    static assignments win; dynamic/unsupported values for a field simply
-    don't produce an assignment and leave any earlier value in place."""
+    static assignments win. A call that fails to parse at all (e.g. it
+    contains a dynamic value like vars.foo anywhere in its argument tree)
+    contributes nothing for ANY field, including ones it might have held a
+    literal value for — this codec has no partial-parse recovery within a
+    single call (see rust/caelestia-core/src/lua.rs), so such a call must
+    never be silently skipped as if it didn't exist. This is used only for
+    the app's OWN managed-block content (see module docstring above), where
+    every call is one this app itself wrote — never for determining an
+    "effective" value shown to the user."""
     result: dict = {}
     for _start, _end, call_text in caelestia_core.find_lua_calls(text, "hl.config"):
         try:
@@ -167,10 +180,14 @@ def _merge_static_input_calls(text: str) -> dict:
 
 def _read_own_managed_input_fields() -> dict:
     """Native-typed {kb_layout, numlock_by_default} currently inside the
-    app's own "input" managed block only (not the whole file) — the safe
-    source of truth a partial write must preserve for the field it isn't
-    currently changing. Propagates ManagedBlockError if the block's own
-    marker structure is corrupted, rather than silently ignoring it."""
+    app's own "input" managed block only (not the whole file) — a
+    point-in-time read for introspection/tests. Propagates
+    ManagedBlockError if the block's own marker structure is corrupted,
+    rather than silently ignoring it. NOT used by the writer itself (see
+    update_managed_lua_block_and_reload's `transform` in
+    _write_input_lua_field): reading here and using the result in a
+    separate, later write would be a TOCTOU race against a concurrent
+    writer touching the same block."""
     path = resolve_path("input", Provider.LUA)
     lines = read_managed_lua_block(path, INPUT_LUA_BLOCK)
     if not lines:
@@ -178,46 +195,147 @@ def _read_own_managed_input_fields() -> dict:
     return _merge_static_input_calls("\n".join(lines))
 
 
+def _hyprctl_getoption(option: str) -> dict | None:
+    """Read-only `hyprctl -j getoption <option>`, returning the parsed JSON
+    object or None if hyprctl is missing, unreachable, times out, exits
+    non-zero, or doesn't return a JSON object — any of which mean "can't
+    safely determine this", never a reason to guess or raise."""
+    hyprctl = shutil.which("hyprctl")
+    if hyprctl is None:
+        return None
+    try:
+        result = subprocess.run(
+            [hyprctl, "-j", "getoption", option], capture_output=True, text=True, timeout=3
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _get_effective_kb_layout() -> str | None:
+    """Hyprland's own live-resolved input:kb_layout, or None if it can't
+    be determined safely — never a guessed default like "us"."""
+    data = _hyprctl_getoption("input:kb_layout")
+    if data is None:
+        return None
+    value = data.get("str")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value
+
+
+def _get_effective_numlock() -> bool | None:
+    """Hyprland's own live-resolved input:numlock_by_default, or None if
+    it can't be determined safely — never a guessed default like False.
+    Hyprland reports bool config values as 0/1 under "int" in getoption's
+    JSON, not as a JSON boolean."""
+    data = _hyprctl_getoption("input:numlock_by_default")
+    if data is None:
+        return None
+    value = data.get("int")
+    if value == 0:
+        return False
+    if value == 1:
+        return True
+    return None
+
+
 def _read_input_lua() -> dict:
-    """Effective (whole-file, last-static-assignment-wins) input.kb_layout /
-    input.numlock_by_default as strings, matching the legacy dict contract
-    of read_input_conf(). A field is simply absent when it can't be
-    statically determined anywhere in the file — callers must not guess a
-    default on its behalf."""
+    """Effective input.kb_layout / input.numlock_by_default as strings,
+    matching the legacy dict contract of read_input_conf(). Sourced from
+    Hyprland's own live state (see module docstring above) — a field is
+    simply absent when it can't be safely determined; callers must not
+    guess a default on its behalf."""
     path = resolve_path("input", Provider.LUA)
-    if not path.exists():
-        return {}
-    text = path.read_bytes().decode("utf-8")
-    # Validates marker structure as a side effect (raises ManagedBlockError
-    # on a corrupted managed block) — the byte range itself isn't needed
-    # since effective values are resolved across the whole file.
-    managed_block_byte_range(path, INPUT_LUA_BLOCK)
-    fields = _merge_static_input_calls(text)
+    if path.exists():
+        # Validates the app's own managed-block marker structure as a
+        # side effect (raises ManagedBlockError on corruption) — even
+        # though the displayed value below no longer depends on this
+        # block's content, a broken app-owned block must still be a
+        # visible, fail-closed error rather than silently ignored, since
+        # future writes rely on this structure being intact.
+        managed_block_byte_range(path, INPUT_LUA_BLOCK)
     result = {}
-    if "kb_layout" in fields:
-        result["kb_layout"] = fields["kb_layout"]
-    if "numlock_by_default" in fields:
-        result["numlock_by_default"] = "true" if fields["numlock_by_default"] else "false"
+    layout = _get_effective_kb_layout()
+    if layout is not None:
+        result["kb_layout"] = layout
+    numlock = _get_effective_numlock()
+    if numlock is not None:
+        result["numlock_by_default"] = "true" if numlock else "false"
     return result
 
 
+def _validate_input_field(key: str, value) -> None:
+    """Fails fast with ValueError before ANY path resolution, capability
+    check, lock, backup, temp file, write, luac, or reload. Python's bool
+    is an int subclass, but isinstance(value, str) and
+    isinstance(value, bool) are each still exact for what they check here
+    — isinstance(1, bool) is False (1 is an int instance, not a bool
+    instance) and isinstance(True, str) is False — so 0/1/"true" are all
+    correctly rejected for numlock_by_default, and True/False are
+    correctly rejected for kb_layout."""
+    if key == "kb_layout":
+        if not isinstance(value, str):
+            raise ValueError(f"kb_layout must be a string, got {type(value).__name__}")
+        if not value.strip():
+            raise ValueError("kb_layout must be a non-empty, non-whitespace string")
+    elif key == "numlock_by_default":
+        if not isinstance(value, bool):
+            raise ValueError(f"numlock_by_default must be a bool, got {type(value).__name__}")
+    else:
+        raise ValueError(f"unknown input field: {key!r}")
+
+
 def _write_input_lua_field(key: str, value) -> None:
-    """Sets a single input.* field (kb_layout: str, numlock_by_default:
-    bool) in the app's managed hl.config({...}) call inside input.lua,
-    preserving whatever value the OTHER field already had in the app's own
-    managed block — never a guessed default, never a value adopted from
-    some other manual call elsewhere in the file."""
+    """Sets a single input.* field (kb_layout: non-empty str,
+    numlock_by_default: bool) in the app's managed hl.config({...}) call
+    inside input.lua.
+
+    - Validates key/value strictly before any side effect (see
+      _validate_input_field).
+    - Preserves the OTHER field's value by reading it from the exact same
+      locked, freshly-read bytes the write is about to replace (via
+      update_managed_lua_block_and_reload's `transform`) — never from an
+      earlier, separately-timed read, which would risk losing a
+      concurrent writer's change to that field.
+    - After a successful write and reload, verifies the change actually
+      took effect (hyprctl's own live-resolved value now matches) before
+      letting the caller treat this as success; a later manual override
+      elsewhere in the file could otherwise silently win. A failed
+      verification is treated exactly like a failed reload: the file is
+      rolled back and reloaded again, and the error propagates.
+    """
+    _validate_input_field(key, value)
     require_config_capability(ConfigCapability.INPUT, writer_provider=Provider.LUA)
     path = resolve_path("input", Provider.LUA)
-    fields = _read_own_managed_input_fields()
-    fields[key] = value
-    ordered = {}
-    if "kb_layout" in fields:
-        ordered["kb_layout"] = fields["kb_layout"]
-    if "numlock_by_default" in fields:
-        ordered["numlock_by_default"] = fields["numlock_by_default"]
-    line = caelestia_core.render_lua_call("hl.config", [{"input": ordered}])
-    write_managed_lua_block_and_reload(path, INPUT_LUA_BLOCK, [line])
+
+    def transform(current_lines: list[str]) -> list[str]:
+        fields = _merge_static_input_calls("\n".join(current_lines))
+        fields[key] = value
+        ordered = {}
+        if "kb_layout" in fields:
+            ordered["kb_layout"] = fields["kb_layout"]
+        if "numlock_by_default" in fields:
+            ordered["numlock_by_default"] = fields["numlock_by_default"]
+        return [caelestia_core.render_lua_call("hl.config", [{"input": ordered}])]
+
+    def verify() -> None:
+        effective = _get_effective_kb_layout() if key == "kb_layout" else _get_effective_numlock()
+        if effective != value:
+            raise RuntimeError(
+                t(
+                    "{field} was written and Hyprland reloaded, but the change is not "
+                    "effective — a later configuration entry may be overriding it."
+                ).format(field=key)
+            )
+
+    update_managed_lua_block_and_reload(path, INPUT_LUA_BLOCK, transform, verify=verify)
 
 
 def read_input_conf(provider: Provider | None | object = _PROVIDER_UNSET) -> dict:
@@ -354,60 +472,112 @@ class GeneralPage(Gtk.Box):
         if not capability_available(provider, ConfigCapability.INPUT):
             self._set_neutral_state()
             return False
-        self._load_all(provider)
+        try:
+            self._load_all(provider)
+        except Exception as e:
+            # _load_all() is written to handle its own errors internally
+            # (see its own try/finally below) — this is a last-resort
+            # backstop so a bug there still can't escape into GTK
+            # construction or a provider-change callback.
+            self._set_neutral_state()
+            self.show_toast(f"{t('Error:')} {e}")
+            return False
         return True
 
     def on_provider_changed(self, provider: Provider | None):
         self.load_if_available(provider)
 
-    def _load_all(self, provider: Provider | None | object = _PROVIDER_UNSET):
-        self.is_loading = True
+    def _apply_layout_and_numlock(self, conf: dict) -> None:
+        """Applies a read_input_conf()-shaped dict to the two Lua/Hyprlang-
+        backed widgets. A missing key means the value is genuinely unknown
+        (not "us" / not-set) and shows as no selection / off rather than a
+        guessed default — see the module-level Lua-provider notes above
+        for why the value can be unknown even when the file itself
+        exists."""
+        layout = conf.get("kb_layout")
+        if layout:
+            layout = layout.lower()
+            if not self.layout_combo.set_active_id(layout):
+                # Unbekanntes Layout ans Ende anhängen
+                self.layout_combo.append(layout, f"Unbekannt  ({layout})")
+                self.layout_combo.set_active_id(layout)
+        else:
+            self.layout_combo.set_active(-1)
 
-        if provider is _PROVIDER_UNSET:
-            provider = load_provider()
-        if not capability_available(provider, ConfigCapability.INPUT):
-            self._set_neutral_state()
-            return
-
-        conf = read_input_conf(provider)
-
-        # Tastaturlayout
-        layout = conf.get("kb_layout", "us").lower()
-        if not self.layout_combo.set_active_id(layout):
-            # Unbekanntes Layout ans Ende anhängen
-            self.layout_combo.append(layout, f"Unbekannt  ({layout})")
-            self.layout_combo.set_active_id(layout)
-
-        # NumLock
-        numlock_val = conf.get("numlock_by_default", "false").lower()
+        numlock_val = conf.get("numlock_by_default")
         self.numlock_row.set_active(numlock_val == "true")
 
-        # Systemsprache
+    def _revert_input_display(self) -> None:
+        """Restores the layout combo / numlock switch to the current
+        safe/effective value after a failed write, under a suppressed
+        `is_loading` guard so this doesn't trigger another write via the
+        widgets' own change signals. Falls back to neutral (no selection /
+        off) if the safe value itself can't be determined right now."""
+        self.is_loading = True
         try:
-            res = subprocess.run(["localectl", "status"], capture_output=True, text=True)
-            for line in res.stdout.splitlines():
-                if "LANG=" in line:
-                    lang = line.split("LANG=")[1].strip()
-                    if not self.lang_combo.set_active_id(lang):
-                        self.lang_combo.append(lang, f"{t('Current')}: {lang}")
-                        self.lang_combo.set_active_id(lang)
-        except Exception as e:
-            print(f"Err Lang: {e}")
+            try:
+                conf = read_input_conf()
+            except Exception:
+                conf = {}
+            self._apply_layout_and_numlock(conf)
+        finally:
+            self.is_loading = False
 
-        # Zeitzone
+    def _load_all(self, provider: Provider | None | object = _PROVIDER_UNSET):
+        self.is_loading = True
         try:
-            res = subprocess.run(
-                ["timedatectl", "show", "-p", "Timezone", "--value"],
-                capture_output=True, text=True
-            )
-            tz = res.stdout.strip()
-            if not self.time_combo.set_active_id(tz):
-                self.time_combo.append(tz, f"{t('Current')}: {tz}")
-                self.time_combo.set_active_id(tz)
-        except Exception as e:
-            print(f"Err Time: {e}")
+            try:
+                if provider is _PROVIDER_UNSET:
+                    provider = load_provider()
+                if not capability_available(provider, ConfigCapability.INPUT):
+                    self._set_neutral_state()
+                    return
 
-        self.is_loading = False
+                try:
+                    conf = read_input_conf(provider)
+                except Exception as e:
+                    # A corrupted managed block (or any other read
+                    # failure) must be a visible, fail-closed neutral
+                    # state — never a silently stale/guessed display, and
+                    # never an exception escaping page load.
+                    conf = {}
+                    self.show_toast(f"{t('Error:')} {e}")
+
+                self._apply_layout_and_numlock(conf)
+
+                # Systemsprache
+                try:
+                    res = subprocess.run(["localectl", "status"], capture_output=True, text=True)
+                    for line in res.stdout.splitlines():
+                        if "LANG=" in line:
+                            lang = line.split("LANG=")[1].strip()
+                            if not self.lang_combo.set_active_id(lang):
+                                self.lang_combo.append(lang, f"{t('Current')}: {lang}")
+                                self.lang_combo.set_active_id(lang)
+                except Exception as e:
+                    print(f"Err Lang: {e}")
+
+                # Zeitzone
+                try:
+                    res = subprocess.run(
+                        ["timedatectl", "show", "-p", "Timezone", "--value"],
+                        capture_output=True, text=True
+                    )
+                    tz = res.stdout.strip()
+                    if not self.time_combo.set_active_id(tz):
+                        self.time_combo.append(tz, f"{t('Current')}: {tz}")
+                        self.time_combo.set_active_id(tz)
+                except Exception as e:
+                    print(f"Err Time: {e}")
+            except Exception as e:
+                # Hard backstop: whatever went wrong above (including a
+                # bug in this method itself), _load_all() must never let
+                # an exception escape — the page falls back to a visible,
+                # neutral, still-usable state instead.
+                self._set_neutral_state()
+                self.show_toast(f"{t('Error:')} {e}")
+        finally:
+            self.is_loading = False
 
     # ── Callbacks ─────────────────────────────────────────────────────────
 
@@ -433,6 +603,7 @@ class GeneralPage(Gtk.Box):
             self.show_toast(f"Tastaturlayout: {lang.upper()}")
         except Exception as e:
             self.show_toast(f"Fehler: {e}")
+            self._revert_input_display()
 
     def _on_numlock_changed(self, row, _):
         if self.is_loading: return
@@ -447,6 +618,7 @@ class GeneralPage(Gtk.Box):
             self.show_toast(f"NumLock: {val}")
         except Exception as e:
             self.show_toast(f"Fehler: {e}")
+            self._revert_input_display()
 
     def _on_language_changed(self, combo):
         if self.is_loading: return
