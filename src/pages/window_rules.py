@@ -9,10 +9,12 @@ from src.config import (
     _fallback_ws_options, HYPR_RULES_CONF,
 )
 from src.hypr_provider import (
+    ConfigCapability,
     Provider,
     load_provider,
     managed_block_byte_range,
     resolve_path,
+    require_config_capability,
     write_managed_legacy_block_and_reload,
     write_managed_lua_block,
     write_managed_lua_block_and_reload,
@@ -112,12 +114,12 @@ def _generate_rules_lines(rules: dict) -> list[str]:
 
 
 def _write_rules_conf(new_lines: list[str]):
+    require_config_capability(ConfigCapability.WINDOW_RULES, writer_provider=Provider.HYPRLANG)
     write_managed_legacy_block_and_reload(
         HYPR_RULES_CONF,
         RULES_CONF_BLOCK,
         new_lines,
         legacy_marker=MANAGED_MARKER,
-        legacy_line_predicate=lambda line: not line.strip() or line.strip().startswith("windowrule ="),
     )
 
 
@@ -275,6 +277,7 @@ def _save_window_rules_lua(rules: dict) -> None:
     LuaWriteError (propagated from write_managed_lua_block) if the
     generated file fails luac validation — the file on disk is then left
     unchanged. An empty `rules` dict produces a valid, empty block."""
+    require_config_capability(ConfigCapability.WINDOW_RULES, writer_provider=Provider.LUA)
     path = resolve_path("rules", Provider.LUA)
     lines = []
     for key, settings in rules.items():
@@ -284,6 +287,7 @@ def _save_window_rules_lua(rules: dict) -> None:
 
 
 def _save_window_rules_lua_and_reload(rules: dict) -> None:
+    require_config_capability(ConfigCapability.WINDOW_RULES, writer_provider=Provider.LUA)
     path = resolve_path("rules", Provider.LUA)
     lines = []
     for key, settings in rules.items():
@@ -300,17 +304,12 @@ class WindowRulesPage(Gtk.Box):
         self.main_window = main_window
         self.set_orientation(Gtk.Orientation.VERTICAL)
 
-        self._provider_banner = Adw.Banner()
-        self._provider_banner.set_title(t("Choose a Hyprland configuration provider to unlock this page."))
-        self.append(self._provider_banner)
-
         provider = load_provider()
         self._workspace_options, self.saved_rules, self._existing_rules = _load_provider_page_state(provider)
         self._imported_keys = _merge_imported_rules(self.saved_rules, self._existing_rules)
         self._rows: dict[str, "AppRuleRow"] = {}
         self._conflicts: list[str] = []
         self._scan_started = False
-        self._provider_banner.set_revealed(provider is None)
 
         # Notebook mit zwei Tabs
         notebook = Gtk.Notebook()
@@ -552,7 +551,6 @@ class WindowRulesPage(Gtk.Box):
 
     def on_provider_changed(self):
         provider = load_provider()
-        self._provider_banner.set_revealed(provider is None)
         self._save_btn.set_sensitive(provider is not None)
         if provider is None:
             return

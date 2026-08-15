@@ -16,11 +16,57 @@ from src.pages.keybinds import KeybindsPage
 from src.pages.wallpaper import WallpaperPage
 from src.pages.workspaces import WorkspacesPage
 from src.lang import t
-from src.hypr_provider import needs_provider_prompt, prompt_provider_choice
+from src.hypr_provider import (
+    ConfigCapability,
+    Provider,
+    capability_available,
+    capability_error_message,
+    load_provider,
+    needs_provider_prompt,
+    prompt_provider_choice,
+)
 
 # Source of truth for "is a newer version out": the manifest.json committed
 # on main (the prod branch, see branching policy — dev is pre-release).
 MANIFEST_URL = "https://raw.githubusercontent.com/Jojo252511/caelestia-settings/main/manifest.json"
+
+PROVIDER_PAGE_CAPABILITIES = {
+    "general": ConfigCapability.INPUT,
+    "wallpaper": ConfigCapability.WALLPAPER_AUTOSTART,
+    "workspaces": ConfigCapability.WORKSPACES,
+    "monitor": ConfigCapability.MONITORS,
+    "window-rules": ConfigCapability.WINDOW_RULES,
+    "keybinds": ConfigCapability.KEYBINDS,
+}
+
+
+def provider_page_access(provider: Provider | None) -> dict[str, bool]:
+    """Single UI source of truth for provider-gated Hyprland pages."""
+    return {
+        page_name: capability_available(provider, capability)
+        for page_name, capability in PROVIDER_PAGE_CAPABILITIES.items()
+    }
+
+
+class _ProviderPageGuard(Gtk.Box):
+    """Keeps the lock explanation usable while the guarded page is insensitive."""
+
+    def __init__(self, child: Gtk.Widget, capability: ConfigCapability):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        self.capability = capability
+        self.child = child
+        self.banner = Adw.Banner()
+        self.append(self.banner)
+        child.set_vexpand(True)
+        self.append(child)
+
+    def set_provider(self, provider: Provider | None) -> None:
+        available = capability_available(provider, self.capability)
+        self.child.set_sensitive(available)
+        self.banner.set_title(
+            "" if available else capability_error_message(provider, self.capability)
+        )
+        self.banner.set_revealed(not available)
 
 
 def _parse_version(version: str) -> tuple:
@@ -77,20 +123,36 @@ class MainWindow(Adw.ApplicationWindow):
         self.mon_page = MonitorPage(self)
         self.workspaces_page = WorkspacesPage(self)
         self.window_rules_page = WindowRulesPage(self)
+        self.general_page = GeneralPage(self)
+        self.wallpaper_page = WallpaperPage(self)
+        self.keybinds_page = KeybindsPage(self)
         self.about_page = AboutPage(self)
         self.home_page = HomePage(self)
+
+        guarded_pages = {
+            "general": self.general_page,
+            "wallpaper": self.wallpaper_page,
+            "workspaces": self.workspaces_page,
+            "monitor": self.mon_page,
+            "window-rules": self.window_rules_page,
+            "keybinds": self.keybinds_page,
+        }
+        self._provider_page_guards = {
+            name: _ProviderPageGuard(page, PROVIDER_PAGE_CAPABILITIES[name])
+            for name, page in guarded_pages.items()
+        }
 
         # ── Stack befüllen ──────────────────────────────────────────────────
         # HomePage reads about_page.local_version, so it is built after it.
         self.stack.add_titled(self.home_page,          "home",    t("Home"))
-        self.stack.add_titled(GeneralPage(self),      "gen",     t("General"))
-        self.stack.add_titled(WallpaperPage(self),     "wall",    "Wallpaper")
-        self.stack.add_titled(self.workspaces_page,   "ws",      "Workspaces")
-        self.stack.add_titled(self.mon_page,           "mon",     t("Monitor"))
+        self.stack.add_titled(self._provider_page_guards["general"], "gen", t("General"))
+        self.stack.add_titled(self._provider_page_guards["wallpaper"], "wall", "Wallpaper")
+        self.stack.add_titled(self._provider_page_guards["workspaces"], "ws", "Workspaces")
+        self.stack.add_titled(self._provider_page_guards["monitor"], "mon", t("Monitor"))
         self.stack.add_titled(WifiPage(self),          "wifi",    "WLAN")
         self.stack.add_titled(AudioPage(self),         "audio",   t("Audio"))
-        self.stack.add_titled(self.window_rules_page,  "rules",   "Window Rules")
-        self.stack.add_titled(KeybindsPage(self),      "keys",    "Keybinds")
+        self.stack.add_titled(self._provider_page_guards["window-rules"], "rules", "Window Rules")
+        self.stack.add_titled(self._provider_page_guards["keybinds"], "keys", "Keybinds")
         self.stack.add_titled(FansPage(self),          "fans",    t("Fans"))
         self.stack.add_titled(UpdatePage(self),        "upd",     t("Updates"))
         self.stack.add_titled(self.about_page,         "about",   t("About"))
@@ -98,17 +160,24 @@ class MainWindow(Adw.ApplicationWindow):
 
         self.stack.set_visible_child_name("home")
 
+        self._apply_provider_page_locks(load_provider())
+
         threading.Thread(target=self._check_for_update, daemon=True).start()
 
         if needs_provider_prompt():
             prompt_provider_choice(self, self._on_provider_chosen)
 
     def _on_provider_chosen(self, provider):
+        self._apply_provider_page_locks(provider)
         self.mon_page.on_provider_changed()
         self.workspaces_page.on_provider_changed()
         self.window_rules_page.on_provider_changed()
         self.home_page.on_provider_changed()
         self.add_toast(Adw.Toast.new(t("Hyprland configuration provider saved.")))
+
+    def _apply_provider_page_locks(self, provider: Provider | None) -> None:
+        for guard in self._provider_page_guards.values():
+            guard.set_provider(provider)
 
     def add_toast(self, toast):
         self.toast_overlay.add_toast(toast)

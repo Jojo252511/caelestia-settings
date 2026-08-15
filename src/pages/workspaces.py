@@ -4,10 +4,12 @@ from src.lang import t
 from gi.repository import Gtk, Adw, GLib
 from src.config import HYPR_MONITORS_CONF, parse_monitors_conf
 from src.hypr_provider import (
+    ConfigCapability,
     Provider,
     load_provider,
     read_managed_lua_block,
     resolve_path,
+    require_config_capability,
     write_managed_legacy_block_and_reload,
     write_managed_lua_block,
     write_managed_lua_block_and_reload,
@@ -77,6 +79,7 @@ def _save_workspaces_lua(workspaces: list[dict]) -> None:
     replaces the "workspaces" managed block in monitors.lua. Raises
     LuaWriteError if the result fails luac validation — file left
     unchanged in that case."""
+    require_config_capability(ConfigCapability.WORKSPACES, writer_provider=Provider.LUA)
     path = resolve_path("monitors", Provider.LUA)
     lines = [
         caelestia_core.render_lua_call("hl.workspace_rule", [_build_workspace_lua_table(ws)])
@@ -86,6 +89,7 @@ def _save_workspaces_lua(workspaces: list[dict]) -> None:
 
 
 def _save_workspaces_lua_and_reload(workspaces: list[dict]) -> None:
+    require_config_capability(ConfigCapability.WORKSPACES, writer_provider=Provider.LUA)
     path = resolve_path("monitors", Provider.LUA)
     lines = [
         caelestia_core.render_lua_call("hl.workspace_rule", [_build_workspace_lua_table(ws)])
@@ -205,6 +209,7 @@ def _save_workspaces(workspaces: list[dict]):
 
 def _save_workspaces_conf(workspaces: list[dict]):
     """Replace only the app-owned workspace block in monitors.conf."""
+    require_config_capability(ConfigCapability.WORKSPACES, writer_provider=Provider.HYPRLANG)
     if not HYPR_MONITORS_CONF.exists():
         return
     lines = [_build_workspace_line(ws) for ws in sorted(workspaces, key=lambda w: w["number"])]
@@ -213,7 +218,6 @@ def _save_workspaces_conf(workspaces: list[dict]):
         WORKSPACES_CONF_BLOCK,
         lines,
         legacy_marker=MANAGED_MARKER,
-        legacy_line_predicate=lambda line: not line.strip() or line.strip().startswith("workspace ="),
     )
 
 # ── Haupt-Seite ───────────────────────────────────────────────────────────────
@@ -228,10 +232,6 @@ class WorkspacesPage(Gtk.Box):
         self._workspaces: list[dict] = []
         self._monitor_names: list[str] = []
         self._rows: list["WorkspaceRow"] = []
-
-        self._provider_banner = Adw.Banner()
-        self._provider_banner.set_title(t("Choose a Hyprland configuration provider to unlock this page."))
-        self.append(self._provider_banner)
 
         # ── Toolbar ──────────────────────────────────────────────────────
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -287,7 +287,6 @@ class WorkspacesPage(Gtk.Box):
         self._rows.clear()
 
         provider_missing = load_provider() is None
-        self._provider_banner.set_revealed(provider_missing)
         self._add_btn.set_sensitive(not provider_missing)
         self._save_btn.set_sensitive(not provider_missing)
         if provider_missing:

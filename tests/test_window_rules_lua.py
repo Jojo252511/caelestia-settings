@@ -179,6 +179,9 @@ class SaveAndLoadWindowRulesLuaTest(unittest.TestCase):
         patcher = mock.patch.dict(hp.LUA_PATHS, {"rules": self.lua_path})
         patcher.start()
         self.addCleanup(patcher.stop)
+        provider_patcher = mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA)
+        provider_patcher.start()
+        self.addCleanup(provider_patcher.stop)
 
     def test_save_then_load_roundtrip(self):
         rules = {"kitty": _rule(workspace="2"), "firefox": _rule(float_="true")}
@@ -551,6 +554,7 @@ class LegacyConfRegressionTest(unittest.TestCase):
             path.write_text("# manual rule\nwindowrule = float, class:^(manual)$\n")
             with (
                 mock.patch("src.pages.window_rules.HYPR_RULES_CONF", path),
+                mock.patch.object(hp, "load_provider", return_value=hp.Provider.HYPRLANG),
                 mock.patch("src.hypr_provider.reload_hyprland"),
             ):
                 wr._write_rules_conf(wr._generate_rules_lines({"kitty": _rule(workspace="2")}))

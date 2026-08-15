@@ -20,6 +20,7 @@ later needs no changes in any page.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -27,7 +28,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-import fcntl
 import gi
 from enum import Enum
 from pathlib import Path
@@ -50,6 +50,70 @@ class Provider(str, Enum):
 
     HYPRLANG = "hyprlang"
     LUA = "lua"
+
+
+class ConfigCapability(str, Enum):
+    """Hyprland configuration areas with independently staged Lua support."""
+
+    INPUT = "input"
+    MONITORS = "monitors"
+    WORKSPACES = "workspaces"
+    WINDOW_RULES = "window-rules"
+    KEYBINDS = "keybinds"
+    WALLPAPER_AUTOSTART = "wallpaper-autostart"
+    EXECS = "execs"
+
+
+_LUA_CAPABILITIES = {
+    ConfigCapability.MONITORS,
+    ConfigCapability.WORKSPACES,
+    ConfigCapability.WINDOW_RULES,
+}
+
+_CAPABILITY_LABELS = {
+    ConfigCapability.INPUT: "General / Input",
+    ConfigCapability.MONITORS: "Monitor configuration",
+    ConfigCapability.WORKSPACES: "Workspace configuration",
+    ConfigCapability.WINDOW_RULES: "Window Rules",
+    ConfigCapability.KEYBINDS: "Keybinds",
+    ConfigCapability.WALLPAPER_AUTOSTART: "Wallpaper / autostart",
+    ConfigCapability.EXECS: "Execs / primary monitor",
+}
+
+
+class ProviderCapabilityError(RuntimeError):
+    """The selected provider cannot safely serve a configuration operation."""
+
+
+def capability_available(provider: Provider | None, capability: ConfigCapability) -> bool:
+    if provider is Provider.HYPRLANG:
+        return True
+    if provider is Provider.LUA:
+        return capability in _LUA_CAPABILITIES
+    return False
+
+
+def capability_error_message(provider: Provider | None, capability: ConfigCapability) -> str:
+    if provider is None:
+        return t("Choose a Hyprland configuration provider first.")
+    feature = t(_CAPABILITY_LABELS[capability])
+    if provider is Provider.LUA:
+        return t("{feature} is not yet available for Lua configuration.").format(feature=feature)
+    return t("{feature} is not available for the selected provider.").format(feature=feature)
+
+
+def require_config_capability(
+    capability: ConfigCapability,
+    *,
+    writer_provider: Provider | None = None,
+) -> Provider:
+    """Fail closed before a config writer performs any filesystem operation."""
+    provider = load_provider()
+    if not capability_available(provider, capability):
+        raise ProviderCapabilityError(capability_error_message(provider, capability))
+    if writer_provider is not None and provider is not writer_provider:
+        raise ProviderCapabilityError(capability_error_message(provider, capability))
+    return provider
 
 
 def load_provider() -> Provider | None:
@@ -226,7 +290,6 @@ def _render_managed_content(
     *,
     comment_prefix: str,
     legacy_marker: str | None = None,
-    legacy_line_predicate: Callable[[str], bool] | None = None,
 ) -> str:
     for line in managed_lines:
         if "\n" in line or "\r" in line:
@@ -238,31 +301,16 @@ def _render_managed_content(
     replacement = newline.join([begin, *managed_lines, end]) + newline
 
     target = blocks.get(block_name)
-    legacy_span = None
     if legacy_marker is not None:
         legacy_lines = [span for span in _line_spans(existing) if span[2].strip() == legacy_marker]
-        if len(legacy_lines) > 1:
-            raise ManagedBlockError(f"Duplicate legacy managed marker: {legacy_marker!r}")
         if legacy_lines:
-            if target is not None:
-                raise ManagedBlockError("Both legacy and begin/end managed markers are present")
-            start, _, _ = legacy_lines[0]
-            spans = _line_spans(existing)
-            index = next(i for i, span in enumerate(spans) if span[0] == start)
-            remainder = spans[index + 1 :]
-            if legacy_line_predicate is None or any(
-                not legacy_line_predicate(candidate[2]) for candidate in remainder
-            ):
-                raise ManagedBlockError(
-                    "Legacy start-only marker is ambiguous; add a matching end marker "
-                    "before saving so manual directives cannot be overwritten."
-                )
-            legacy_span = (start, len(existing))
+            raise ManagedBlockError(
+                "Legacy start-only marker detected; explicitly migrate the old block "
+                "to trusted BEGIN/END markers before saving. No changes were applied."
+            )
 
     if target is not None:
         return existing[: target[0]] + replacement + existing[target[1] :]
-    if legacy_span is not None:
-        return existing[: legacy_span[0]] + replacement + existing[legacy_span[1] :]
     if not existing:
         return replacement
     separator = "" if existing.endswith(("\n", "\r")) else newline
@@ -469,9 +517,15 @@ def write_managed_legacy_block_and_reload(
     managed_lines: list[str],
     *,
     legacy_marker: str,
-    legacy_line_predicate: Callable[[str], bool],
 ) -> None:
     """Atomically write a legacy block, reload, and roll back on reload failure."""
+    if path.exists():
+        existing = path.read_bytes().decode("utf-8")
+        if any(span[2].strip() == legacy_marker for span in _line_spans(existing)):
+            raise ManagedBlockError(
+                "Legacy start-only marker detected; explicitly migrate the old block "
+                "to trusted BEGIN/END markers before saving. No changes were applied."
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     with _with_managed_write_lock(path):
         existed = path.exists()
@@ -482,7 +536,6 @@ def write_managed_legacy_block_and_reload(
             managed_lines,
             comment_prefix="#",
             legacy_marker=legacy_marker,
-            legacy_line_predicate=legacy_line_predicate,
         )
         _atomic_replace_locked(path, new_content, original, None)
         try:

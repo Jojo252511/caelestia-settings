@@ -2,6 +2,7 @@ import re
 import subprocess
 from gi.repository import Gtk, Adw
 from src.config import HYPR_INPUT_CONF
+from src.hypr_provider import ConfigCapability, Provider, require_config_capability
 from src.lang import t
 
 # Gängige Tastaturlayouts: (xkb-Code, Anzeigename)
@@ -128,6 +129,7 @@ def read_input_conf() -> dict:
 
 def _write_input_conf_key(key: str, value: str):
     """Ersetzt einen Schlüssel in input.conf. Schreibt ihn ans Ende wenn nicht gefunden."""
+    require_config_capability(ConfigCapability.INPUT, writer_provider=Provider.HYPRLANG)
     if not HYPR_INPUT_CONF.exists():
         return
     try:
@@ -146,7 +148,7 @@ def _write_input_conf_key(key: str, value: str):
             )
         HYPR_INPUT_CONF.write_text(new_content)
     except Exception as e:
-        print(f"input.conf schreiben fehler: {e}")
+        raise RuntimeError(f"input.conf schreiben fehler: {e}") from e
 
 
 class GeneralPage(Gtk.Box):
@@ -274,8 +276,9 @@ class GeneralPage(Gtk.Box):
         lang = combo.get_active_id()
         if not lang: return
         try:
-            subprocess.run(["hyprctl", "keyword", "input:kb_layout", lang], check=True)
+            require_config_capability(ConfigCapability.INPUT, writer_provider=Provider.HYPRLANG)
             _write_input_conf_key("kb_layout", lang)
+            subprocess.run(["hyprctl", "keyword", "input:kb_layout", lang], check=True)
             self.show_toast(f"Tastaturlayout: {lang.upper()}")
         except Exception as e:
             self.show_toast(f"Fehler: {e}")
@@ -284,8 +287,9 @@ class GeneralPage(Gtk.Box):
         if self.is_loading: return
         val = "true" if row.get_active() else "false"
         try:
-            subprocess.run(["hyprctl", "keyword", "input:numlock_by_default", val], check=True)
+            require_config_capability(ConfigCapability.INPUT, writer_provider=Provider.HYPRLANG)
             _write_input_conf_key("numlock_by_default", val)
+            subprocess.run(["hyprctl", "keyword", "input:numlock_by_default", val], check=True)
             self.show_toast(f"NumLock: {val}")
         except Exception as e:
             self.show_toast(f"Fehler: {e}")

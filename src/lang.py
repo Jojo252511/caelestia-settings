@@ -155,6 +155,20 @@ TRANSLATIONS = {
     "Choose a Hyprland configuration provider first.": (
         "Wähle zuerst ein Hyprland-Konfigurationsformat."
     ),
+    "{feature} is not yet available for Lua configuration.": (
+        "{feature} ist für Lua-Konfiguration noch nicht verfügbar."
+    ),
+    "{feature} is not available for the selected provider.": (
+        "{feature} ist für das gewählte Konfigurationsformat nicht verfügbar."
+    ),
+    "General / Input": "Allgemein / Eingabe",
+    "Monitor configuration": "Monitor-Konfiguration",
+    "Workspace configuration": "Workspace-Konfiguration",
+    "Wallpaper / autostart": "Hintergrundbild / Autostart",
+    "Execs / primary monitor": "Execs / Hauptmonitor",
+    "Primary monitor selection is not yet available for Lua configuration.": (
+        "Die Hauptmonitor-Auswahl ist für Lua-Konfiguration noch nicht verfügbar."
+    ),
     "Lua compiler (luac) is required; changes were not applied.": (
         "Der Lua-Compiler (luac) ist erforderlich; Änderungen wurden nicht übernommen."
     ),

@@ -4,6 +4,7 @@ import shlex
 import subprocess
 import threading
 from pathlib import Path
+from src.hypr_provider import ConfigCapability, Provider, require_config_capability
 from src.lang import t
 from gi.repository import Gtk, Adw, GLib, GdkPixbuf
 
@@ -43,6 +44,10 @@ def _ensure_dirs():
 
 
 def _write_mpvpaper_autostart(video_path: Path | None):
+    require_config_capability(
+        ConfigCapability.WALLPAPER_AUTOSTART,
+        writer_provider=Provider.HYPRLANG,
+    )
     _EXECS_CONF.parent.mkdir(parents=True, exist_ok=True)
     lines = _EXECS_CONF.read_text().splitlines() if _EXECS_CONF.exists() else []
     lines = [line for line in lines if _MPVPAPER_MARKER not in line]

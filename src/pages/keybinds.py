@@ -4,6 +4,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from src.lang import t
+from src.hypr_provider import ConfigCapability, Provider, require_config_capability
 from gi.repository import Gtk, Adw
 
 import caelestia_core
@@ -124,6 +125,7 @@ def _find_line(lines: list[str], line_number: int, raw_line: str | None) -> int 
 
 
 def save_keybind(data: dict, line_number: int | None = None, raw_line: str | None = None):
+    require_config_capability(ConfigCapability.KEYBINDS, writer_provider=Provider.HYPRLANG)
     _backup()
     KEYBINDS_CONF.parent.mkdir(parents=True, exist_ok=True)
     if not KEYBINDS_CONF.exists():
@@ -146,6 +148,7 @@ def save_keybind(data: dict, line_number: int | None = None, raw_line: str | Non
 
 
 def delete_keybind(line_number: int, raw_line: str | None = None):
+    require_config_capability(ConfigCapability.KEYBINDS, writer_provider=Provider.HYPRLANG)
     _backup()
     lines = KEYBINDS_CONF.read_text().splitlines()
     idx = _find_line(lines, line_number, raw_line)

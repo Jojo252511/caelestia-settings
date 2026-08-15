@@ -72,6 +72,9 @@ class SaveAndParseMonitorsLuaTest(unittest.TestCase):
         patcher = mock.patch.dict(hp.LUA_PATHS, {"monitors": self.lua_path})
         patcher.start()
         self.addCleanup(patcher.stop)
+        provider_patcher = mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA)
+        provider_patcher.start()
+        self.addCleanup(provider_patcher.stop)
 
     def test_save_renders_expected_call_syntax(self):
         monitor._save_monitors_lua([_mon(bitdepth="10")])
@@ -122,7 +125,6 @@ class ProviderMissingMonitorTest(unittest.TestCase):
 
     def test_page_is_locked_and_cleared_without_provider(self):
         page = monitor.MonitorPage.__new__(monitor.MonitorPage)
-        page._provider_banner = mock.MagicMock()
         page._apply_btn = mock.MagicMock()
         page._canvas = mock.MagicMock()
         page._settings_panel = mock.MagicMock()
@@ -133,7 +135,6 @@ class ProviderMissingMonitorTest(unittest.TestCase):
         ):
             monitor.MonitorPage.load_monitors(page)
         live_mock.assert_not_called()
-        page._provider_banner.set_revealed.assert_called_once_with(True)
         page._apply_btn.set_sensitive.assert_called_once_with(False)
         self.assertEqual(page._monitors, [])
 

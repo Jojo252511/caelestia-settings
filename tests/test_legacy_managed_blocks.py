@@ -23,43 +23,41 @@ class LegacyWriterProtectionTest(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
         self.path = Path(self._tmpdir.name) / "config.conf"
+        provider_patcher = mock.patch.object(hp, "load_provider", return_value=hp.Provider.HYPRLANG)
+        provider_patcher.start()
+        self.addCleanup(provider_patcher.stop)
 
-    def test_monitor_writer_migrates_unambiguous_single_marker_at_eof(self):
-        self.path.write_bytes(
+    def test_monitor_writer_rejects_single_marker_even_at_eof(self):
+        original = (
             b"# manual prefix\r\n"
             + monitor.MONITORS_LEGACY_MARKER.encode()
             + b"\r\n\r\nmonitor = OLD,preferred,auto,1\r\n"
         )
+        self.path.write_bytes(original)
         mon = SimpleNamespace(
             name="DP-1", disabled=False, resolution="1920x1080", hz="60", x=0, y=0,
             scale=1, bitdepth="", transform="0",
         )
         with (
             mock.patch.object(config, "HYPR_MONITORS_CONF", self.path),
-            mock.patch.object(hp, "reload_hyprland"),
+            self.assertRaisesRegex(hp.ManagedBlockError, "explicitly migrate"),
         ):
             monitor._save_monitors_conf([mon])
-        content = self.path.read_bytes()
-        self.assertTrue(content.startswith(b"# manual prefix\r\n"))
-        self.assertTrue(content.endswith(b"# END Caelestia Settings managed block: monitors\r\n"))
-        self.assertEqual(content.count(b"BEGIN Caelestia Settings managed block: monitors"), 1)
-        self.assertEqual(content.count(b"END Caelestia Settings managed block: monitors"), 1)
-        self.assertNotIn(b"OLD", content)
+        self.assertEqual(self.path.read_bytes(), original)
 
     def test_monitor_writer_rejects_ambiguous_single_marker(self):
         original = (
-            f"{monitor.MONITORS_LEGACY_MARKER}\n"
-            "monitor = OLD,preferred,auto,1\n"
-            "# manual suffix\n"
-            "workspace = 9, monitor:MANUAL\n"
+            monitor.MONITORS_LEGACY_MARKER.encode()
+            + b"\nmonitor = OLD,preferred,auto,1\n"
+            b"monitor = MANUAL,preferred,auto,1\n"
         )
-        self.path.write_text(original)
+        self.path.write_bytes(original)
         with (
             mock.patch.object(config, "HYPR_MONITORS_CONF", self.path),
-            self.assertRaisesRegex(hp.ManagedBlockError, "ambiguous"),
+            self.assertRaisesRegex(hp.ManagedBlockError, "explicitly migrate"),
         ):
             monitor._save_monitors_conf([])
-        self.assertEqual(self.path.read_text(), original)
+        self.assertEqual(self.path.read_bytes(), original)
 
     def test_genuine_block_preserves_crlf_prefix_and_suffix_exactly(self):
         original = (
@@ -87,36 +85,47 @@ class LegacyWriterProtectionTest(unittest.TestCase):
 
     def test_workspace_writer_rejects_ambiguous_single_marker(self):
         original = (
-            "monitor = DP-1,preferred,auto,1\n"
-            "workspace = 99, monitor:MANUAL\n"
-            f"{workspaces.MANAGED_MARKER}\n"
-            "workspace = 1, monitor:OLD\n"
-            "# manual suffix\n"
+            workspaces.MANAGED_MARKER.encode()
+            + b"\nworkspace = 1, monitor:OLD\n"
+            b"workspace = 99, monitor:MANUAL\n"
         )
-        self.path.write_text(original)
+        self.path.write_bytes(original)
         values = [{"number": 2, "monitor": "DP-1", "default": False, "persistent": True}]
         with (
             mock.patch.object(workspaces, "HYPR_MONITORS_CONF", self.path),
-            self.assertRaisesRegex(hp.ManagedBlockError, "ambiguous"),
+            self.assertRaisesRegex(hp.ManagedBlockError, "explicitly migrate"),
         ):
             workspaces._save_workspaces_conf(values)
-        self.assertEqual(self.path.read_text(), original)
+        self.assertEqual(self.path.read_bytes(), original)
 
     def test_rules_writer_rejects_ambiguous_single_marker(self):
         original = (
-            "windowrule = float true, match:class manual-before\n"
-            f"{window_rules.MANAGED_MARKER}\n"
-            "windowrule = float true, match:class old-generated\n"
-            "# manual suffix\n"
-            "windowrule = float true, match:class manual-after\n"
+            window_rules.MANAGED_MARKER.encode()
+            + b"\nwindowrule = float true, match:class old-generated\n"
+            b"windowrule = float true, match:class manual-after\n"
         )
-        self.path.write_text(original)
+        self.path.write_bytes(original)
         with (
             mock.patch.object(window_rules, "HYPR_RULES_CONF", self.path),
-            self.assertRaisesRegex(hp.ManagedBlockError, "ambiguous"),
+            self.assertRaisesRegex(hp.ManagedBlockError, "explicitly migrate"),
         ):
             window_rules._write_rules_conf(["windowrule = float true, match:class new-generated"])
-        self.assertEqual(self.path.read_text(), original)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_single_marker_fails_before_backup_temp_or_lock_creation(self):
+        original = monitor.MONITORS_LEGACY_MARKER.encode() + b"\nmonitor = MANUAL,preferred,auto,1\n"
+        self.path.write_bytes(original)
+        with (
+            mock.patch.object(config, "HYPR_MONITORS_CONF", self.path),
+            mock.patch.object(hp, "_create_backup") as backup_mock,
+            mock.patch.object(hp.tempfile, "mkstemp") as temp_mock,
+            self.assertRaises(hp.ManagedBlockError),
+        ):
+            monitor._save_monitors_conf([])
+        backup_mock.assert_not_called()
+        temp_mock.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertFalse(self.path.with_name(f".{self.path.name}.caelestia.lock").exists())
 
     def test_corrupt_legacy_file_aborts_instead_of_appending_second_block(self):
         original = "# BEGIN Caelestia Settings managed block: workspaces\nworkspace = 1\n"

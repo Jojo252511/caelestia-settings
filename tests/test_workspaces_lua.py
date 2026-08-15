@@ -43,6 +43,9 @@ class SaveAndLoadWorkspacesLuaTest(unittest.TestCase):
         patcher = mock.patch.dict(hp.LUA_PATHS, {"monitors": self.lua_path})
         patcher.start()
         self.addCleanup(patcher.stop)
+        provider_patcher = mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA)
+        provider_patcher.start()
+        self.addCleanup(provider_patcher.stop)
 
     def test_save_then_load_roundtrip(self):
         data = [_ws(number=2, default=True), _ws(number=1, monitor="DP-2", persistent=True)]
@@ -95,7 +98,6 @@ class LoadWorkspacesDispatchTest(unittest.TestCase):
         page._content = mock.MagicMock()
         page._content.get_first_child.return_value = None
         page._rows = []
-        page._provider_banner = mock.MagicMock()
         page._add_btn = mock.MagicMock()
         page._save_btn = mock.MagicMock()
         status = mock.MagicMock()
