@@ -126,6 +126,21 @@ TRANSLATIONS = {
     "Comment": "Kommentar",
     "Save": "Speichern",
     "Cancel": "Abbrechen",
+    "Yes": "Ja",
+    "No": "Nein",
+
+    # ── Hyprland config-provider transition (temporary, see issue #51) ──────
+    "Hyprland configuration format": "Hyprland-Konfigurationsformat",
+    (
+        "Do you already use Hyprland's Lua configuration (hyprland.lua)? "
+        "This is a temporary compatibility question and will be removed "
+        "in a future release."
+    ): (
+        "Verwendest du bereits Hyprlands Lua-Konfiguration (hyprland.lua)? "
+        "Diese vorübergehende Kompatibilitätsabfrage wird in einer "
+        "zukünftigen Version entfernt."
+    ),
+    "Hyprland configuration provider saved.": "Hyprland-Konfigurationsformat gespeichert.",
     "Delete keybind?": "Keybind löschen?",
     "Delete": "Löschen",
     "Keybind saved and Hyprland reloaded.": "Keybind gespeichert und Hyprland neu geladen.",

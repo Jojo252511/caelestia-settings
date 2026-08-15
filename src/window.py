@@ -16,6 +16,7 @@ from src.pages.keybinds import KeybindsPage
 from src.pages.wallpaper import WallpaperPage
 from src.pages.workspaces import WorkspacesPage
 from src.lang import t
+from src.hypr_provider import needs_provider_prompt, prompt_provider_choice
 
 # Source of truth for "is a newer version out": the manifest.json committed
 # on main (the prod branch, see branching policy — dev is pre-release).
@@ -95,6 +96,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack.set_visible_child_name("home")
 
         threading.Thread(target=self._check_for_update, daemon=True).start()
+
+        if needs_provider_prompt():
+            prompt_provider_choice(self, self._on_provider_chosen)
+
+    def _on_provider_chosen(self, provider):
+        self.add_toast(Adw.Toast.new(t("Hyprland configuration provider saved.")))
 
     def add_toast(self, toast):
         self.toast_overlay.add_toast(toast)
