@@ -52,7 +52,8 @@ class WallpaperCallbackCapabilityTest(unittest.TestCase):
         with (
             mock.patch.object(hp, "load_provider", return_value=provider),
             mock.patch.object(wallpaper, "_MPV_PID_FILE", self.pid_file),
-            mock.patch.object(wallpaper, "_EXECS_CONF", self.execs_file),
+            mock.patch.dict(hp.LEGACY_PATHS, {"execs": self.execs_file}),
+            mock.patch.dict(hp.LUA_PATHS, {"execs": self.execs_file}),
             mock.patch.object(wallpaper.subprocess, "Popen") as popen,
             mock.patch.object(wallpaper.subprocess, "run") as run,
             mock.patch.object(wallpaper.os, "kill") as kill,
@@ -72,16 +73,18 @@ class WallpaperCallbackCapabilityTest(unittest.TestCase):
         self.assertEqual(self.pid_file.read_bytes(), self.pid_original)
         self.assertEqual(self.execs_file.read_bytes(), self.execs_original)
 
-    def test_none_and_lua_block_image_video_and_random_before_side_effects(self):
-        for provider in (None, hp.Provider.LUA):
-            for callback_name in ("_on_image_selected", "_on_video_selected", "_on_random"):
-                with self.subTest(provider=provider, callback=callback_name):
-                    self._assert_blocked_callback(provider, callback_name)
+    def test_no_provider_blocks_image_video_and_random_before_side_effects(self):
+        # Lua unlocked WALLPAPER_AUTOSTART in M6 — only "no provider chosen
+        # yet" still blocks these callbacks; see
+        # WallpaperLuaAutostartTest for the now-supported Lua path.
+        for callback_name in ("_on_image_selected", "_on_video_selected", "_on_random"):
+            with self.subTest(callback=callback_name):
+                self._assert_blocked_callback(None, callback_name)
 
     def test_delayed_execution_rechecks_provider(self):
         page = self._page()
         action = mock.MagicMock()
-        with mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA):
+        with mock.patch.object(hp, "load_provider", return_value=None):
             wallpaper.WallpaperPage._run_wallpaper_action(page, action)
         action.assert_not_called()
         page.main_window.add_toast.assert_called_once()
@@ -136,6 +139,77 @@ class WallpaperCallbackCapabilityTest(unittest.TestCase):
         page._stop_mpv.assert_called_once()
         popen.assert_called_once_with(["caelestia", "wallpaper", "-r", str(image_dir)])
         write_autostart.assert_called_once_with(None)
+
+    def test_lua_image_path_is_no_longer_blocked(self):
+        # WALLPAPER_AUTOSTART became Lua-available in M6 — same callback
+        # behavior as hyprlang, just routed through the Lua writer
+        # internally (see WallpaperLuaAutostartTest for that writer).
+        page = self._page()
+        path = Path(self._tmpdir.name) / "wall.png"
+        with (
+            mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(wallpaper.subprocess, "Popen") as popen,
+            mock.patch.object(wallpaper, "_write_mpvpaper_autostart") as write_autostart,
+        ):
+            wallpaper.WallpaperPage._on_image_selected(page, path)
+
+        page._stop_mpv.assert_called_once()
+        popen.assert_called_once_with(["caelestia", "wallpaper", "-f", str(path)])
+        write_autostart.assert_called_once_with(None)
+        self.assertEqual(page._current, str(path))
+        page.main_window.add_toast.assert_called_once()
+
+    def test_lua_video_path_is_no_longer_blocked(self):
+        page = self._page()
+        path = Path(self._tmpdir.name) / "wall.mp4"
+        process = mock.MagicMock(pid=1234)
+        with (
+            mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(wallpaper, "_MPV_PID_FILE", self.pid_file),
+            mock.patch.object(wallpaper.subprocess, "Popen", return_value=process) as popen,
+            mock.patch.object(wallpaper, "_write_mpvpaper_autostart") as write_autostart,
+        ):
+            wallpaper.WallpaperPage._on_video_selected(page, path)
+
+        page._stop_mpv.assert_called_once()
+        popen.assert_called_once()
+        write_autostart.assert_called_once_with(path)
+        self.assertEqual(self.pid_file.read_text(), "1234")
+        self.assertEqual(page._current, str(path))
+
+    def test_lua_random_path_is_no_longer_blocked(self):
+        page = self._page()
+        image_dir = Path(self._tmpdir.name) / "images"
+        with (
+            mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(wallpaper, "_get_image_dir", return_value=image_dir),
+            mock.patch.object(wallpaper.subprocess, "Popen") as popen,
+            mock.patch.object(wallpaper, "_write_mpvpaper_autostart") as write_autostart,
+        ):
+            wallpaper.WallpaperPage._on_random(page, None)
+
+        page._stop_mpv.assert_called_once()
+        popen.assert_called_once_with(["caelestia", "wallpaper", "-r", str(image_dir)])
+        write_autostart.assert_called_once_with(None)
+
+    def test_write_failure_under_lua_shows_error_toast_not_success(self):
+        page = self._page()
+        path = Path(self._tmpdir.name) / "wall.mp4"
+        with (
+            mock.patch.object(hp, "load_provider", return_value=hp.Provider.LUA),
+            mock.patch.object(wallpaper.subprocess, "Popen"),
+            mock.patch.object(
+                wallpaper, "_write_mpvpaper_autostart", side_effect=hp.LuaWriteError("invalid lua")
+            ),
+        ):
+            wallpaper.WallpaperPage._on_video_selected(page, path)
+
+        page._show_banner.assert_not_called()
+        page.main_window.add_toast.assert_called_once()
+        toast = page.main_window.add_toast.call_args.args[0]
+        self.assertIn("invalid lua", toast.get_title())
+        self.assertEqual(page._current, "unchanged")
+        page._vid_grid.mark_current.assert_not_called()
 
 
 class ProviderDependentReadTest(unittest.TestCase):

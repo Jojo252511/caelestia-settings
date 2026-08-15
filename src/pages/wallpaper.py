@@ -4,7 +4,15 @@ import shlex
 import subprocess
 import threading
 from pathlib import Path
-from src.hypr_provider import ConfigCapability, Provider, require_config_capability
+import caelestia_core
+from src.hypr_provider import (
+    ConfigCapability,
+    Provider,
+    resolve_path,
+    require_config_capability,
+    write_managed_legacy_block_and_reload,
+    write_managed_lua_block_and_reload,
+)
 from src.lang import t
 from gi.repository import Gtk, Adw, GLib, GdkPixbuf
 
@@ -18,8 +26,9 @@ VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 THUMB_SIZE    = 160
 THUMB_CACHE   = Path.home() / ".cache" / "caelestia-settings" / "thumbs"
 _MPV_PID_FILE = Path.home() / ".cache" / "caelestia-settings" / "mpvpaper.pid"
-_EXECS_CONF   = Path.home() / ".config" / "hypr" / "hyprland" / "execs.conf"
 _MPVPAPER_MARKER = "# caelestia-settings: video-wallpaper"
+_MPVPAPER_ARGS = "loop --no-audio --panscan=1.0"
+WALLPAPER_AUTOSTART_BLOCK = "wallpaper-autostart"
 
 
 def _get_image_dir() -> Path:
@@ -43,20 +52,43 @@ def _ensure_dirs():
     THUMB_CACHE.mkdir(parents=True, exist_ok=True)
 
 
+def _mpvpaper_shell_cmd(video_path: Path) -> str:
+    """Builds the mpvpaper shell command line, shell-quoting the video
+    path and mpv option string so paths/args with spaces, quotes,
+    backslashes, unicode, `$()`, `;`, or newlines can never break out of
+    the command mpvpaper is invoked with."""
+    return f"mpvpaper '*' {shlex.quote(str(video_path))} -o {shlex.quote(_MPVPAPER_ARGS)}"
+
+
 def _write_mpvpaper_autostart(video_path: Path | None):
-    require_config_capability(
-        ConfigCapability.WALLPAPER_AUTOSTART,
-        writer_provider=Provider.HYPRLANG,
-    )
-    _EXECS_CONF.parent.mkdir(parents=True, exist_ok=True)
-    lines = _EXECS_CONF.read_text().splitlines() if _EXECS_CONF.exists() else []
-    lines = [line for line in lines if _MPVPAPER_MARKER not in line]
-    if video_path is not None:
-        lines.append(
-            f"exec-once = mpvpaper '*' {shlex.quote(str(video_path))}"
-            f" -o 'loop --no-audio --panscan=1.0'  {_MPVPAPER_MARKER}"
+    """Persists (or clears, when `video_path` is None) the app-owned
+    video-wallpaper autostart entry under the currently active provider.
+    Only ever touches the "wallpaper-autostart" managed block — manually
+    written execs content, and the app's own separate "primary-monitor"
+    block, are always left untouched."""
+    provider = require_config_capability(ConfigCapability.WALLPAPER_AUTOSTART)
+    path = resolve_path("execs", provider)
+
+    if provider is Provider.LUA:
+        lines = (
+            [caelestia_core.render_autostart_cmd(_mpvpaper_shell_cmd(video_path))]
+            if video_path is not None
+            else []
         )
-    _EXECS_CONF.write_text("\n".join(lines) + "\n")
+        write_managed_lua_block_and_reload(path, WALLPAPER_AUTOSTART_BLOCK, lines)
+        return
+
+    lines = (
+        [f"exec-once = {_mpvpaper_shell_cmd(video_path)}  {_MPVPAPER_MARKER}"]
+        if video_path is not None
+        else []
+    )
+    write_managed_legacy_block_and_reload(
+        path,
+        WALLPAPER_AUTOSTART_BLOCK,
+        lines,
+        legacy_predicate=lambda line: _MPVPAPER_MARKER in line,
+    )
 
 
 def get_current_wallpaper() -> str:
@@ -500,10 +532,7 @@ class WallpaperPage(Gtk.Box):
     def _run_wallpaper_action(self, action, *, missing_program_message: str | None = None):
         """Run a live wallpaper action only while its capability is available."""
         try:
-            require_config_capability(
-                ConfigCapability.WALLPAPER_AUTOSTART,
-                writer_provider=Provider.HYPRLANG,
-            )
+            require_config_capability(ConfigCapability.WALLPAPER_AUTOSTART)
             action()
         except FileNotFoundError:
             message = missing_program_message or t("Required wallpaper program not found.")
@@ -528,7 +557,7 @@ class WallpaperPage(Gtk.Box):
             self._stop_mpv()
             self._mpv_proc = subprocess.Popen([
                 "mpvpaper", "*", str(path),
-                "-o", "loop --no-audio --panscan=1.0"
+                "-o", _MPVPAPER_ARGS
             ])
             try:
                 _MPV_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -547,10 +576,7 @@ class WallpaperPage(Gtk.Box):
         )
 
     def _stop_mpv(self):
-        require_config_capability(
-            ConfigCapability.WALLPAPER_AUTOSTART,
-            writer_provider=Provider.HYPRLANG,
-        )
+        require_config_capability(ConfigCapability.WALLPAPER_AUTOSTART)
         if self._mpv_proc is not None:
             if self._mpv_proc.poll() is None:
                 self._mpv_proc.terminate()

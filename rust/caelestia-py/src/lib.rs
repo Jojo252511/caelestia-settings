@@ -402,6 +402,29 @@ fn find_lua_calls(input: &str, func_name: &str) -> Vec<(usize, usize, String)> {
         .collect()
 }
 
+/// `caelestia_core.render_autostart_cmd(cmd: str) -> str`
+///
+/// Renders the app's `hyprland.start` autostart idiom for a single shell
+/// command — see `caelestia_core::lua::render_autostart_cmd`. `cmd` must
+/// already be shell-quoted by the caller; this only handles Lua-level
+/// string escaping.
+#[pyfunction]
+fn render_autostart_cmd(cmd: &str) -> String {
+    caelestia_core::lua::render_autostart_cmd(cmd)
+}
+
+/// `caelestia_core.parse_autostart_cmd(input: str) -> str`
+///
+/// The inverse of `render_autostart_cmd`: extracts the single command
+/// string from an autostart entry, raising `ValueError` if `input`
+/// doesn't contain exactly one `hl.exec_cmd(...)` call with exactly one
+/// string argument.
+#[pyfunction]
+fn parse_autostart_cmd(input: &str) -> PyResult<String> {
+    caelestia_core::lua::parse_autostart_cmd(input)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 // ---------------------------------------------------------------------
 // module registration
 // ---------------------------------------------------------------------
@@ -442,6 +465,8 @@ fn caelestia_core_pymodule(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_lua_call, m)?)?;
     m.add_function(wrap_pyfunction!(render_lua_call, m)?)?;
     m.add_function(wrap_pyfunction!(find_lua_calls, m)?)?;
+    m.add_function(wrap_pyfunction!(render_autostart_cmd, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_autostart_cmd, m)?)?;
 
     Ok(())
 }
@@ -511,12 +536,31 @@ hl.monitor({ output = "DP-1" })"#;
                 "parse_lua_call",
                 "render_lua_call",
                 "find_lua_calls",
+                "render_autostart_cmd",
+                "parse_autostart_cmd",
             ] {
                 assert!(
                     module.getattr(name).is_ok(),
                     "missing Python wrapper {name}"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn autostart_cmd_wrapper_roundtrips() {
+        let rendered = render_autostart_cmd("mpvpaper '*' /tmp/a.mp4");
+        assert_eq!(
+            parse_autostart_cmd(&rendered).unwrap(),
+            "mpvpaper '*' /tmp/a.mp4"
+        );
+    }
+
+    #[test]
+    fn autostart_cmd_wrapper_maps_parse_failure_to_value_error() {
+        let error = parse_autostart_cmd("local x = 1").unwrap_err();
+        with_python(|py| {
+            assert!(error.is_instance_of::<PyValueError>(py));
         });
     }
 }

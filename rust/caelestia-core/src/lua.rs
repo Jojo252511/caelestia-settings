@@ -677,6 +677,67 @@ pub fn render_call(path: &[&str], args: &[LuaValue]) -> String {
     format!("{}({})", path.join("."), args_str.join(", "))
 }
 
+// ---------------------------------------------------------------------
+// Autostart idiom: `hl.on("hyprland.start", function() ... end)`
+// ---------------------------------------------------------------------
+//
+// Hyprland's Lua config has no flat `exec-once`-style call — autostart
+// commands are registered by reacting to the `hyprland.start` event:
+//
+//   hl.on("hyprland.start", function()
+//     hl.exec_cmd("waybar")
+//   end)
+//
+// A `function() ... end` body is a Lua *statement sequence*, which this
+// codec deliberately does not model as a `LuaValue` (see the module
+// doc comment: no loops, function bodies, or local declarations). Rather
+// than widen the value model for this one call site, the app's autostart
+// entries — always exactly zero or one shell command per managed block —
+// get a dedicated, narrow render/parse pair instead, built entirely out
+// of the existing call primitives: `render_call` for the inner
+// `hl.exec_cmd(...)` (all string-escaping stays in this module), and
+// `find_calls`/`parse_call` for reading it back, exactly like any other
+// caller that tolerates unmodeled surrounding Lua as filler.
+
+/// Renders the app's single-command autostart idiom: an `hl.on(...)`
+/// registration whose callback body is exactly one `hl.exec_cmd(cmd)`
+/// call. `cmd` is a raw shell command string (the app is responsible for
+/// its own shell-level quoting, e.g. `shlex.quote` on each argument,
+/// before it ever reaches here) — this function only guarantees the
+/// *Lua* string-literal escaping of that command.
+pub fn render_autostart_cmd(cmd: &str) -> String {
+    format!(
+        "hl.on(\"hyprland.start\", function() {} end)",
+        render_call(&["hl", "exec_cmd"], &[LuaValue::Str(cmd.to_string())])
+    )
+}
+
+/// Parses a single autostart entry rendered by [`render_autostart_cmd`],
+/// returning the inner command string. Locates the `hl.exec_cmd(...)`
+/// call anywhere in `input` via [`find_calls`] (tolerating the
+/// `hl.on("hyprland.start", function() ... end)` wrapper, and any other
+/// surrounding Lua, as unmodeled filler) and requires there be exactly
+/// one such call with exactly one string argument. Zero matches, more
+/// than one match, or a non-string/multi-argument call are all errors —
+/// callers should treat this exactly like any other `LuaError`: fall back
+/// to "unrecognized content" rather than guessing at a partial result.
+pub fn parse_autostart_cmd(input: &str) -> Result<String, LuaError> {
+    let calls = find_calls(input, "hl.exec_cmd");
+    if calls.len() != 1 {
+        return Err(LuaError(format!(
+            "expected exactly one hl.exec_cmd(...) call, found {}",
+            calls.len()
+        )));
+    }
+    let call = parse_call(calls[0].2)?;
+    match call.args.as_slice() {
+        [LuaValue::Str(cmd)] => Ok(cmd.clone()),
+        _ => Err(LuaError(
+            "hl.exec_cmd(...) must take exactly one string argument".into(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1031,6 +1092,70 @@ hl.window_rule({ match = { class = "kitty" }, workspace = "2" })
     fn no_calls_returns_empty_not_error() {
         assert!(find_calls("local x = 1", "hl.window_rule").is_empty());
         assert!(find_calls("", "hl.window_rule").is_empty());
+    }
+
+    // ── autostart idiom ────────────────────────────────────────────────
+
+    #[test]
+    fn renders_autostart_cmd_golden() {
+        let rendered = render_autostart_cmd("mpvpaper '*' /home/user/video.mp4");
+        assert_eq!(
+            rendered,
+            r#"hl.on("hyprland.start", function() hl.exec_cmd("mpvpaper '*' /home/user/video.mp4") end)"#
+        );
+    }
+
+    #[test]
+    fn autostart_cmd_roundtrips() {
+        let cases = [
+            "mpvpaper '*' /home/user/Videos/Wallpaper/clip.mp4 -o 'loop --no-audio --panscan=1.0'",
+            "xrandr --output DP-1 --primary",
+            r#"echo "quotes \"here\" and $(nope) and ; newline\nend""#,
+            "path with spaces/and/'quotes'/and 日本語 ✨",
+        ];
+        for cmd in cases {
+            let rendered = render_autostart_cmd(cmd);
+            let parsed = parse_autostart_cmd(&rendered).unwrap();
+            assert_eq!(parsed, cmd, "roundtrip mismatch for {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn autostart_cmd_parses_within_surrounding_whitespace_and_comments() {
+        let src =
+            "-- autostart\nhl.on(\"hyprland.start\", function()\n  hl.exec_cmd(\"waybar\")\nend)\n";
+        assert_eq!(parse_autostart_cmd(src).unwrap(), "waybar");
+    }
+
+    #[test]
+    fn autostart_cmd_rejects_zero_calls() {
+        assert!(parse_autostart_cmd("").is_err());
+        assert!(parse_autostart_cmd("local x = 1").is_err());
+        assert!(parse_autostart_cmd("hl.on(\"hyprland.start\", function() end)").is_err());
+    }
+
+    #[test]
+    fn autostart_cmd_rejects_multiple_calls() {
+        let src = r#"hl.exec_cmd("a")
+hl.exec_cmd("b")"#;
+        assert!(parse_autostart_cmd(src).is_err());
+    }
+
+    #[test]
+    fn autostart_cmd_rejects_non_string_argument() {
+        assert!(parse_autostart_cmd("hl.exec_cmd(true)").is_err());
+        assert!(parse_autostart_cmd("hl.exec_cmd(42)").is_err());
+    }
+
+    #[test]
+    fn autostart_cmd_rejects_extra_arguments() {
+        assert!(parse_autostart_cmd(r#"hl.exec_cmd("a", { workspace = "2" })"#).is_err());
+    }
+
+    #[test]
+    fn autostart_cmd_handles_empty_string_command() {
+        let rendered = render_autostart_cmd("");
+        assert_eq!(parse_autostart_cmd(&rendered).unwrap(), "");
     }
 
     #[test]

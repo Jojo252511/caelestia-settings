@@ -69,6 +69,8 @@ _LUA_CAPABILITIES = {
     ConfigCapability.WORKSPACES,
     ConfigCapability.WINDOW_RULES,
     ConfigCapability.INPUT,
+    ConfigCapability.WALLPAPER_AUTOSTART,
+    ConfigCapability.EXECS,
 }
 
 _CAPABILITY_LABELS = {
@@ -433,16 +435,31 @@ def managed_block_byte_range(path: Path, block_name: str) -> tuple[int, int] | N
     return len(text[: target[2]].encode()), len(text[: target[3]].encode())
 
 
-def read_managed_lua_block(path: Path, block_name: str) -> list[str]:
-    """Returns the lines currently inside the named managed block in
-    `path`, or `[]` if the file or the block doesn't exist yet."""
+def _read_managed_block(path: Path, block_name: str, comment_prefix: str) -> list[str]:
     if not path.exists():
         return []
     text = path.read_bytes().decode("utf-8")
-    target = _scan_managed_blocks(text, "--").get(block_name)
+    target = _scan_managed_blocks(text, comment_prefix).get(block_name)
     if target is None:
         return []
     return text[target[2] : target[3]].splitlines()
+
+
+def read_managed_lua_block(path: Path, block_name: str) -> list[str]:
+    """Returns the lines currently inside the named managed block in
+    `path`, or `[]` if the file or the block doesn't exist yet."""
+    return _read_managed_block(path, block_name, "--")
+
+
+def read_managed_legacy_block(path: Path, block_name: str) -> list[str]:
+    """Returns the lines currently inside the named managed block in a
+    legacy (`#`-comment) `path`, or `[]` if the file or the block doesn't
+    exist yet. Mirrors `read_managed_lua_block` for the hyprlang provider —
+    used by callers (e.g. reading back the app-owned primary-monitor exec
+    entry) that must not scan the whole file, since a legacy config file
+    like execs.conf can also hold manually written, non-app-owned content
+    outside the named block."""
+    return _read_managed_block(path, block_name, "#")
 
 
 def write_managed_lua_block(path: Path, block_name: str, managed_lines: list[str]) -> None:
@@ -598,16 +615,45 @@ def write_managed_legacy_block_and_reload(
     block_name: str,
     managed_lines: list[str],
     *,
-    legacy_marker: str,
+    legacy_marker: str | None = None,
+    legacy_predicate: Callable[[str], bool] | None = None,
 ) -> None:
-    """Atomically write a legacy block, reload, and roll back on reload failure."""
+    """Atomically write a legacy block, reload, and roll back on reload failure.
+
+    `legacy_marker`, if given, fails closed when an old *start-only*
+    marker comment (a whole line this app used to write on its own,
+    before the BEGIN/END scheme existed) is still present anywhere in the
+    file — the caller must migrate it manually first.
+
+    `legacy_predicate`, if given, fails closed when a line OUTSIDE every
+    already-existing managed block matches the predicate — for content
+    this app itself used to write inline (e.g. a fixed sentinel comment
+    appended to a generated line) with no dedicated block structure at
+    all, so there is no single fixed marker line to match against.
+    Unlike `legacy_marker`, this never looks inside an existing managed
+    block (new content this app itself just wrote there would otherwise
+    always match).
+    """
     if path.exists():
         existing = path.read_bytes().decode("utf-8")
-        if any(span[2].strip() == legacy_marker for span in _line_spans(existing)):
+        if legacy_marker is not None and any(
+            span[2].strip() == legacy_marker for span in _line_spans(existing)
+        ):
             raise ManagedBlockError(
                 "Legacy start-only marker detected; explicitly migrate the old block "
                 "to trusted BEGIN/END markers before saving. No changes were applied."
             )
+        if legacy_predicate is not None:
+            managed_ranges = list(_scan_managed_blocks(existing, "#").values())
+            for start, end, body in _line_spans(existing):
+                if any(r_start <= start < r_end for r_start, r_end, _, _ in managed_ranges):
+                    continue
+                if legacy_predicate(body.strip()):
+                    raise ManagedBlockError(
+                        "Manually written configuration matches this app's legacy managed "
+                        "content outside a managed block; migrate it manually before saving. "
+                        "No changes were applied."
+                    )
     path.parent.mkdir(parents=True, exist_ok=True)
     with _with_managed_write_lock(path):
         existed = path.exists()

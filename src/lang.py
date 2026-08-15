@@ -171,9 +171,6 @@ TRANSLATIONS = {
     "Workspace configuration": "Workspace-Konfiguration",
     "Wallpaper / autostart": "Hintergrundbild / Autostart",
     "Execs / primary monitor": "Execs / Hauptmonitor",
-    "Primary monitor selection is not yet available for Lua configuration.": (
-        "Die Hauptmonitor-Auswahl ist für Lua-Konfiguration noch nicht verfügbar."
-    ),
     "Lua compiler (luac) is required; changes were not applied.": (
         "Der Lua-Compiler (luac) ist erforderlich; Änderungen wurden nicht übernommen."
     ),
